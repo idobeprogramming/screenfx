@@ -3,7 +3,16 @@
 #include <windows.h>
 #include <shellapi.h>
 
+#include "../core/Settings.h"
+#include "../graphics/CaptureSession.h"
+#include "../graphics/D3D11Context.h"
+#include "../graphics/OverlayWindow.h"
+#include "../graphics/RenderEngine.h"
+#include "Monitors.h"
+
+#include <cstdint>
 #include <string>
+#include <vector>
 
 namespace screenfx::platform {
 
@@ -37,12 +46,27 @@ private:
     void OnToggleRequested();
     void OnStopRequested();
     void ShowTrayMenu(POINT screenPoint);
+    bool InitializeGraphics();
+    void ShutdownGraphics();
+    void RefreshMonitors();
+    bool StartCaptureForSelectedMonitor();
+    void SetEnabled(bool enabled);
+    void RenderAvailableFrame();
 
     HINSTANCE instance_ = nullptr;
     HWND window_ = nullptr;
     HWND statusLabel_ = nullptr;
     bool enabled_ = false;
     bool hotkeysRegistered_ = false;
+    bool graphicsInitialized_ = false;
+    bool shuttingDown_ = false;
+    core::AppSettings settings_{};
+    std::vector<MonitorInfo> monitors_;
+    graphics::D3D11Context graphics_;
+    graphics::OverlayWindow overlay_;
+    graphics::CaptureSession capture_;
+    graphics::RenderEngine renderer_;
+    std::uint64_t lastRenderedSequence_ = 0;
     NOTIFYICONDATAW trayIcon_{};
 };
 

@@ -2,6 +2,7 @@
 
 #include <shellapi.h>
 
+#include <algorithm>
 #include <array>
 
 namespace screenfx::platform {
@@ -17,11 +18,14 @@ int MakeControlId(int base) {
 
 } // namespace
 
-Win32App::Win32App(HINSTANCE instance, int showCommand) : instance_(instance) {
+Win32App::Win32App(HINSTANCE instance, int showCommand)
+    : instance_(instance), capture_(graphics_), renderer_(graphics_) {
     CreateControlWindow(showCommand);
 }
 
 Win32App::~Win32App() {
+    shuttingDown_ = true;
+    ShutdownGraphics();
     UnregisterHotkeys();
     RemoveTrayIcon();
     if (window_ != nullptr) {
@@ -73,6 +77,7 @@ bool Win32App::CreateControlWindow(int showCommand) {
         instance_,
         nullptr);
 
+    RefreshMonitors();
     RegisterHotkeys();
     AddTrayIcon();
     ShowWindow(window_, showCommand == SW_HIDE ? SW_HIDE : SW_SHOW);
@@ -156,13 +161,108 @@ void Win32App::UpdateStatus(const std::wstring& text) {
 }
 
 void Win32App::OnToggleRequested() {
-    enabled_ = !enabled_;
-    UpdateStatus(enabled_ ? L"Filtre activé — moteur graphique en préparation." : L"Filtre désactivé.");
+    SetEnabled(!enabled_);
 }
 
 void Win32App::OnStopRequested() {
-    enabled_ = false;
+    SetEnabled(false);
+    ShutdownGraphics();
     UpdateStatus(L"Filtre arrêté.");
+}
+
+bool Win32App::InitializeGraphics() {
+    if (graphicsInitialized_) {
+        return true;
+    }
+    if (monitors_.empty()) {
+        RefreshMonitors();
+    }
+    if (monitors_.empty()) {
+        UpdateStatus(L"Aucun moniteur actif n’a été détecté.");
+        return false;
+    }
+    if (!graphics_.Initialize()) {
+        UpdateStatus(L"Direct3D 11 n’est pas disponible sur cette machine.");
+        return false;
+    }
+    if (!overlay_.Create(instance_)) {
+        UpdateStatus(L"Impossible de créer la superposition.");
+        return false;
+    }
+    const auto& monitor = monitors_[std::min<std::size_t>(settings_.monitorIndex, monitors_.size() - 1)];
+    overlay_.SetBounds(monitor.bounds);
+    if (!renderer_.Initialize(overlay_.Handle(), monitor.bounds)) {
+        UpdateStatus(L"Impossible d’initialiser le rendu GPU ou les shaders.");
+        return false;
+    }
+    if (!StartCaptureForSelectedMonitor()) {
+        UpdateStatus(L"Impossible de capturer le moniteur sélectionné.");
+        return false;
+    }
+    graphicsInitialized_ = true;
+    const std::wstring mode = settings_.framePacing == core::FramePacingMode::Uncapped
+                                  ? L"sans plafond logiciel"
+                                  : L"synchronisé à l’écran";
+    UpdateStatus(L"Moteur prêt — mode " + mode + L".");
+    return true;
+}
+
+bool Win32App::StartCaptureForSelectedMonitor() {
+    if (monitors_.empty()) {
+        return false;
+    }
+    const auto& monitor = monitors_[std::min<std::size_t>(settings_.monitorIndex, monitors_.size() - 1)];
+    const SIZE size{monitor.bounds.right - monitor.bounds.left, monitor.bounds.bottom - monitor.bounds.top};
+    const bool uncapped = settings_.framePacing == core::FramePacingMode::Uncapped;
+    return capture_.Start(monitor.handle, size, uncapped);
+}
+
+void Win32App::ShutdownGraphics() {
+    capture_.Stop();
+    overlay_.Hide();
+    renderer_.Shutdown();
+    overlay_.Destroy();
+    graphicsInitialized_ = false;
+    lastRenderedSequence_ = 0;
+}
+
+void Win32App::SetEnabled(bool enabled) {
+    if (enabled == enabled_) {
+        return;
+    }
+    if (enabled && !InitializeGraphics()) {
+        enabled_ = false;
+        return;
+    }
+    enabled_ = enabled;
+    settings_.enabled = enabled_;
+    if (enabled_) {
+        overlay_.Show();
+        UpdateStatus(L"Filtre actif — capture en cours.");
+    } else {
+        overlay_.Hide();
+        UpdateStatus(L"Filtre désactivé.");
+    }
+}
+
+void Win32App::RefreshMonitors() {
+    monitors_ = EnumerateMonitors();
+    if (settings_.monitorIndex >= monitors_.size() && !monitors_.empty()) {
+        settings_.monitorIndex = 0;
+    }
+}
+
+void Win32App::RenderAvailableFrame() {
+    if (!enabled_ || !graphicsInitialized_) {
+        return;
+    }
+    graphics::CapturedFrame frame;
+    if (!capture_.TryAcquireLatest(frame) || frame.sequence == lastRenderedSequence_) {
+        return;
+    }
+    if (renderer_.Render(frame, settings_.effects, settings_.framePacing)) {
+        lastRenderedSequence_ = frame.sequence;
+    }
 }
 
 void Win32App::ShowTrayMenu(POINT screenPoint) {
@@ -238,6 +338,15 @@ LRESULT Win32App::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
     case WM_CLOSE:
         HidePanel();
         return 0;
+    case WM_DISPLAYCHANGE:
+        RefreshMonitors();
+        if (enabled_ && !monitors_.empty()) {
+            const auto& monitor = monitors_[std::min<std::size_t>(settings_.monitorIndex, monitors_.size() - 1)];
+            overlay_.SetBounds(monitor.bounds);
+            renderer_.Resize(monitor.bounds);
+            StartCaptureForSelectedMonitor();
+        }
+        return 0;
     case WM_DESTROY:
         PostQuitMessage(0);
         return 0;
@@ -248,9 +357,29 @@ LRESULT Win32App::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
 
 int Win32App::Run() {
     MSG message{};
-    while (GetMessageW(&message, nullptr, 0, 0) > 0) {
-        TranslateMessage(&message);
-        DispatchMessageW(&message);
+    while (!shuttingDown_) {
+        bool processedMessage = false;
+        while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE) != FALSE) {
+            processedMessage = true;
+            if (message.message == WM_QUIT) {
+                shuttingDown_ = true;
+                break;
+            }
+            TranslateMessage(&message);
+            DispatchMessageW(&message);
+        }
+        if (shuttingDown_) {
+            break;
+        }
+
+        if (enabled_ && graphicsInitialized_) {
+            RenderAvailableFrame();
+            if (!processedMessage && capture_.FrameEvent() != nullptr) {
+                WaitForSingleObject(capture_.FrameEvent(), 2);
+            }
+        } else {
+            WaitMessage();
+        }
     }
     return static_cast<int>(message.wParam);
 }
