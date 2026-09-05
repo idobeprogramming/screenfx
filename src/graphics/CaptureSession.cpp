@@ -28,6 +28,25 @@ CaptureSession::CaptureSession(D3D11Context& graphics) : graphics_(graphics) {
     frameEvent_ = CreateEventW(nullptr, FALSE, FALSE, nullptr);
 }
 
+CaptureSession::CallbackGuard::CallbackGuard(CaptureSession* value) : owner(value) {
+    if (owner != nullptr) {
+        std::lock_guard lock(owner->callbackMutex_);
+        ++owner->activeCallbacks_;
+    }
+}
+
+CaptureSession::CallbackGuard::~CallbackGuard() {
+    if (owner != nullptr) {
+        {
+            std::lock_guard lock(owner->callbackMutex_);
+            if (owner->activeCallbacks_ > 0) {
+                --owner->activeCallbacks_;
+            }
+        }
+        owner->callbackCv_.notify_all();
+    }
+}
+
 CaptureSession::~CaptureSession() {
     Stop();
     if (frameEvent_ != nullptr) {
@@ -56,9 +75,10 @@ bool CaptureSession::SetCaptureRate(bool uncapped) {
 
     try {
         if (auto session5 = session_.try_as<winrt::Windows::Graphics::Capture::IGraphicsCaptureSession5>()) {
-            // A 1 ms interval avoids the documented 0 ms fallback on some builds
-            // while leaving the application without a practical software cap.
-            const auto interval = uncapped ? std::chrono::milliseconds(1) : std::chrono::milliseconds(16);
+            // Zero asks Windows Graphics Capture to deliver frames as soon as the
+            // compositor has a new frame. Present() controls the optional VSync
+            // policy; the uncapped path adds no software frame interval.
+            const auto interval = uncapped ? std::chrono::milliseconds(0) : std::chrono::milliseconds(16);
             session5.MinUpdateInterval(TimeSpan(interval));
             return true;
         }
@@ -69,6 +89,7 @@ bool CaptureSession::SetCaptureRate(bool uncapped) {
 
 bool CaptureSession::Start(HMONITOR monitor, SIZE size, bool uncapped) {
     Stop();
+    borderlessCaptureAvailable_ = false;
     if (monitor == nullptr || size.cx <= 0 || size.cy <= 0 || graphics_.Device() == nullptr) {
         return false;
     }
@@ -98,7 +119,8 @@ bool CaptureSession::Start(HMONITOR monitor, SIZE size, bool uncapped) {
             }
         }
         SetCaptureRate(uncapped);
-        framePool_.FrameArrived({this, &CaptureSession::OnFrameArrived});
+        frameArrivedToken_ = framePool_.FrameArrived({this, &CaptureSession::OnFrameArrived});
+        frameHandlerRegistered_ = true;
         running_.store(true, std::memory_order_release);
         capturedFrames_.store(0, std::memory_order_relaxed);
         droppedFrames_.store(0, std::memory_order_relaxed);
@@ -114,6 +136,14 @@ bool CaptureSession::Start(HMONITOR monitor, SIZE size, bool uncapped) {
 
 void CaptureSession::Stop() {
     running_.store(false, std::memory_order_release);
+    if (framePool_ && frameHandlerRegistered_) {
+        try {
+            framePool_.FrameArrived(frameArrivedToken_);
+        } catch (...) {
+        }
+        frameHandlerRegistered_ = false;
+        frameArrivedToken_ = {};
+    }
     try {
         if (session_) {
             session_.Close();
@@ -127,6 +157,11 @@ void CaptureSession::Stop() {
     framePool_ = nullptr;
     item_ = nullptr;
     winrtDevice_ = nullptr;
+    borderlessCaptureAvailable_ = false;
+    {
+        std::unique_lock lock(callbackMutex_);
+        callbackCv_.wait(lock, [this] { return activeCallbacks_ == 0; });
+    }
     {
         std::lock_guard lock(frameMutex_);
         latestTexture_.Reset();
@@ -139,6 +174,7 @@ void CaptureSession::Stop() {
 void CaptureSession::OnFrameArrived(
     winrt::Windows::Graphics::Capture::Direct3D11CaptureFramePool const& sender,
     winrt::Windows::Foundation::IInspectable const&) {
+    CallbackGuard callbackGuard(this);
     if (!running_.load(std::memory_order_acquire)) {
         return;
     }
@@ -159,6 +195,9 @@ void CaptureSession::OnFrameArrived(
         sourceTexture->GetDesc(&sourceDescription);
 
         std::lock_guard frameLock(frameMutex_);
+        if (!running_.load(std::memory_order_acquire)) {
+            return;
+        }
         if (!latestTexture_ || latestSize_.cx != contentSize.Width || latestSize_.cy != contentSize.Height) {
             D3D11_TEXTURE2D_DESC destinationDescription = sourceDescription;
             destinationDescription.BindFlags = D3D11_BIND_SHADER_RESOURCE;
@@ -174,6 +213,9 @@ void CaptureSession::OnFrameArrived(
             latestSize_ = SIZE{contentSize.Width, contentSize.Height};
         }
 
+        if (latestSequence_ != consumedSequence_) {
+            droppedFrames_.fetch_add(1, std::memory_order_relaxed);
+        }
         graphics_.ImmediateContext()->CopyResource(latestTexture_.Get(), sourceTexture.Get());
         latestSequence_++;
         capturedFrames_.fetch_add(1, std::memory_order_relaxed);

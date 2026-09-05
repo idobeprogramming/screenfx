@@ -138,6 +138,8 @@ void RenderEngine::Shutdown() {
     sampler_.Reset();
     outputWindow_ = nullptr;
     frameNumber_ = 0;
+    presentedFrames_ = 0;
+    droppedFrames_ = 0;
 }
 
 bool RenderEngine::Resize(const RECT& bounds) {

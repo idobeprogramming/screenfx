@@ -11,6 +11,7 @@
 #include <wrl/client.h>
 
 #include <atomic>
+#include <condition_variable>
 #include <cstdint>
 #include <mutex>
 
@@ -42,6 +43,12 @@ public:
     bool BorderlessCaptureAvailable() const noexcept { return borderlessCaptureAvailable_; }
 
 private:
+    struct CallbackGuard {
+        CaptureSession* owner = nullptr;
+        explicit CallbackGuard(CaptureSession* value);
+        ~CallbackGuard();
+    };
+
     void OnFrameArrived(
         winrt::Windows::Graphics::Capture::Direct3D11CaptureFramePool const& sender,
         winrt::Windows::Foundation::IInspectable const&);
@@ -52,12 +59,17 @@ private:
     winrt::Windows::Graphics::Capture::GraphicsCaptureItem item_{nullptr};
     winrt::Windows::Graphics::Capture::Direct3D11CaptureFramePool framePool_{nullptr};
     winrt::Windows::Graphics::Capture::GraphicsCaptureSession session_{nullptr};
+    winrt::event_token frameArrivedToken_{};
+    bool frameHandlerRegistered_ = false;
     winrt::Windows::Graphics::DirectX::Direct3D11::IDirect3DDevice winrtDevice_{nullptr};
     Microsoft::WRL::ComPtr<ID3D11Texture2D> latestTexture_;
     SIZE latestSize_{};
     std::uint64_t latestSequence_ = 0;
     std::uint64_t consumedSequence_ = 0;
     std::mutex frameMutex_;
+    std::mutex callbackMutex_;
+    std::condition_variable callbackCv_;
+    std::uint32_t activeCallbacks_ = 0;
     HANDLE frameEvent_ = nullptr;
     std::atomic<bool> running_{false};
     std::atomic<std::uint64_t> capturedFrames_{0};

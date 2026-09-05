@@ -19,12 +19,16 @@ int MakeControlId(int base) {
 } // namespace
 
 Win32App::Win32App(HINSTANCE instance, int showCommand)
-    : instance_(instance), capture_(graphics_), renderer_(graphics_) {
-    CreateControlWindow(showCommand);
+    : instance_(instance), settings_(core::SettingsStore::Load()), capture_(graphics_), renderer_(graphics_) {
+    if (CreateControlWindow(showCommand) && settings_.enabled) {
+        SetEnabled(true);
+    }
 }
 
 Win32App::~Win32App() {
     shuttingDown_ = true;
+    core::SettingsStore::Save(settings_);
+    panel_.Shutdown();
     ShutdownGraphics();
     UnregisterHotkeys();
     RemoveTrayIcon();
@@ -53,8 +57,8 @@ bool Win32App::CreateControlWindow(int showCommand) {
         WS_OVERLAPPEDWINDOW,
         CW_USEDEFAULT,
         CW_USEDEFAULT,
-        460,
-        300,
+        980,
+        820,
         nullptr,
         nullptr,
         instance_,
@@ -66,7 +70,7 @@ bool Win32App::CreateControlWindow(int showCommand) {
     statusLabel_ = CreateWindowExW(
         0,
         L"STATIC",
-        L"Prêt — le moteur graphique sera initialisé à l’étape suivante.",
+        L"Prêt — activez le filtre pour démarrer la capture.",
         WS_CHILD | WS_VISIBLE | SS_LEFT,
         24,
         32,
@@ -78,6 +82,8 @@ bool Win32App::CreateControlWindow(int showCommand) {
         nullptr);
 
     RefreshMonitors();
+    EnsurePanel();
+    UpdateStatus(L"Prêt — activez le filtre pour démarrer la capture.");
     RegisterHotkeys();
     AddTrayIcon();
     ShowWindow(window_, showCommand == SW_HIDE ? SW_HIDE : SW_SHOW);
@@ -144,6 +150,7 @@ void Win32App::ShowPanel() {
     if (window_ == nullptr) {
         return;
     }
+    EnsurePanel();
     ShowWindow(window_, SW_SHOW);
     SetForegroundWindow(window_);
 }
@@ -155,6 +162,7 @@ void Win32App::HidePanel() {
 }
 
 void Win32App::UpdateStatus(const std::wstring& text) {
+    statusText_ = text;
     if (statusLabel_ != nullptr) {
         SetWindowTextW(statusLabel_, text.c_str());
     }
@@ -167,6 +175,8 @@ void Win32App::OnToggleRequested() {
 void Win32App::OnStopRequested() {
     SetEnabled(false);
     ShutdownGraphics();
+    settings_.enabled = false;
+    core::SettingsStore::Save(settings_);
     UpdateStatus(L"Filtre arrêté.");
 }
 
@@ -181,25 +191,29 @@ bool Win32App::InitializeGraphics() {
         UpdateStatus(L"Aucun moniteur actif n’a été détecté.");
         return false;
     }
-    if (!graphics_.Initialize()) {
+    if (graphics_.Device() == nullptr && !graphics_.Initialize()) {
         UpdateStatus(L"Direct3D 11 n’est pas disponible sur cette machine.");
         return false;
     }
     if (!overlay_.Create(instance_)) {
+        ShutdownGraphics();
         UpdateStatus(L"Impossible de créer la superposition.");
         return false;
     }
     const auto& monitor = monitors_[std::min<std::size_t>(settings_.monitorIndex, monitors_.size() - 1)];
     overlay_.SetBounds(monitor.bounds);
     if (!renderer_.Initialize(overlay_.Handle(), monitor.bounds)) {
+        ShutdownGraphics();
         UpdateStatus(L"Impossible d’initialiser le rendu GPU ou les shaders.");
         return false;
     }
     if (!StartCaptureForSelectedMonitor()) {
+        ShutdownGraphics();
         UpdateStatus(L"Impossible de capturer le moniteur sélectionné.");
         return false;
     }
     graphicsInitialized_ = true;
+    renderRequested_ = true;
     const std::wstring mode = settings_.framePacing == core::FramePacingMode::Uncapped
                                   ? L"sans plafond logiciel"
                                   : L"synchronisé à l’écran";
@@ -223,6 +237,9 @@ void Win32App::ShutdownGraphics() {
     renderer_.Shutdown();
     overlay_.Destroy();
     graphicsInitialized_ = false;
+    latestFrame_ = {};
+    haveFrame_ = false;
+    renderRequested_ = false;
     lastRenderedSequence_ = 0;
 }
 
@@ -232,6 +249,8 @@ void Win32App::SetEnabled(bool enabled) {
     }
     if (enabled && !InitializeGraphics()) {
         enabled_ = false;
+        settings_.enabled = false;
+        core::SettingsStore::Save(settings_);
         return;
     }
     enabled_ = enabled;
@@ -240,9 +259,11 @@ void Win32App::SetEnabled(bool enabled) {
         overlay_.Show();
         UpdateStatus(L"Filtre actif — capture en cours.");
     } else {
+        ShutdownGraphics();
         overlay_.Hide();
         UpdateStatus(L"Filtre désactivé.");
     }
+    core::SettingsStore::Save(settings_);
 }
 
 void Win32App::RefreshMonitors() {
@@ -256,12 +277,98 @@ void Win32App::RenderAvailableFrame() {
     if (!enabled_ || !graphicsInitialized_) {
         return;
     }
-    graphics::CapturedFrame frame;
-    if (!capture_.TryAcquireLatest(frame) || frame.sequence == lastRenderedSequence_) {
+    graphics::CapturedFrame newFrame;
+    if (capture_.TryAcquireLatest(newFrame)) {
+        latestFrame_ = std::move(newFrame);
+        haveFrame_ = true;
+        renderRequested_ = true;
+    }
+    if (!haveFrame_ || !renderRequested_) {
         return;
     }
-    if (renderer_.Render(frame, settings_.effects, settings_.framePacing)) {
-        lastRenderedSequence_ = frame.sequence;
+    if (renderer_.Render(latestFrame_, settings_.effects, settings_.framePacing)) {
+        lastRenderedSequence_ = latestFrame_.sequence;
+        renderRequested_ = false;
+    } else {
+        // Wait for a fresh capture before retrying. This avoids a tight retry loop
+        // when a device or swap chain has just reported an error.
+        renderRequested_ = false;
+    }
+}
+
+void Win32App::EnsurePanel() {
+    if (panel_.IsInitialized()) {
+        return;
+    }
+    if (panel_.Initialize(window_)) {
+        if (statusLabel_ != nullptr) {
+            ShowWindow(statusLabel_, SW_HIDE);
+        }
+    }
+}
+
+void Win32App::RestartCaptureIfRunning() {
+    if (!graphicsInitialized_) {
+        renderRequested_ = true;
+        return;
+    }
+    if (monitors_.empty()) {
+        OnStopRequested();
+        UpdateStatus(L"Aucun moniteur actif n’a été détecté.");
+        return;
+    }
+    const auto& monitor = monitors_[std::min<std::size_t>(settings_.monitorIndex, monitors_.size() - 1)];
+    overlay_.SetBounds(monitor.bounds);
+    if (!renderer_.Resize(monitor.bounds)) {
+        renderer_.Shutdown();
+        if (!renderer_.Initialize(overlay_.Handle(), monitor.bounds)) {
+            OnStopRequested();
+            UpdateStatus(L"Impossible de redimensionner le rendu GPU.");
+            return;
+        }
+    }
+    capture_.Stop();
+    if (!StartCaptureForSelectedMonitor()) {
+        OnStopRequested();
+        UpdateStatus(L"Impossible de redémarrer la capture du moniteur.");
+        return;
+    }
+    renderRequested_ = true;
+}
+
+void Win32App::RenderPanel() {
+    if (!panel_.IsInitialized() || !IsWindowVisible(window_)) {
+        return;
+    }
+    const ui::PanelActions actions = panel_.Render(
+        settings_,
+        monitors_,
+        overlay_.CaptureExcluded(),
+        capture_.CapturedFrames(),
+        capture_.DroppedFrames(),
+        renderer_.PresentedFrames(),
+        statusText_);
+    if (actions.toggleRequested) {
+        SetEnabled(actions.desiredEnabled);
+    }
+    if (actions.stopRequested) {
+        OnStopRequested();
+    }
+    if (actions.monitorChanged) {
+        RestartCaptureIfRunning();
+    }
+    if (actions.pacingChanged) {
+        RestartCaptureIfRunning();
+    }
+    if (actions.resetRequested) {
+        settings_.effects = {};
+        renderRequested_ = true;
+    }
+    if (actions.settingsChanged) {
+        renderRequested_ = true;
+    }
+    if (actions.saveRequested || actions.monitorChanged || actions.pacingChanged) {
+        core::SettingsStore::Save(settings_);
     }
 }
 
@@ -310,7 +417,18 @@ LRESULT CALLBACK Win32App::WindowProc(HWND window, UINT message, WPARAM wParam, 
 }
 
 LRESULT Win32App::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
+    if (panel_.HandleMessage(message, wParam, lParam)) {
+        return 0;
+    }
     switch (message) {
+    case WM_GETMINMAXINFO: {
+        auto* metrics = reinterpret_cast<MINMAXINFO*>(lParam);
+        if (metrics != nullptr) {
+            metrics->ptMinTrackSize.x = 900;
+            metrics->ptMinTrackSize.y = 700;
+        }
+        return 0;
+    }
     case WM_HOTKEY:
         switch (static_cast<int>(wParam)) {
         case kHotkeyToggle:
@@ -340,11 +458,8 @@ LRESULT Win32App::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
         return 0;
     case WM_DISPLAYCHANGE:
         RefreshMonitors();
-        if (enabled_ && !monitors_.empty()) {
-            const auto& monitor = monitors_[std::min<std::size_t>(settings_.monitorIndex, monitors_.size() - 1)];
-            overlay_.SetBounds(monitor.bounds);
-            renderer_.Resize(monitor.bounds);
-            StartCaptureForSelectedMonitor();
+        if (enabled_) {
+            RestartCaptureIfRunning();
         }
         return 0;
     case WM_DESTROY:
@@ -373,11 +488,14 @@ int Win32App::Run() {
         }
 
         if (enabled_ && graphicsInitialized_) {
+            RenderPanel();
             RenderAvailableFrame();
             if (!processedMessage && capture_.FrameEvent() != nullptr) {
-                WaitForSingleObject(capture_.FrameEvent(), 2);
+                HANDLE event = capture_.FrameEvent();
+                MsgWaitForMultipleObjectsEx(1, &event, INFINITE, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
             }
         } else {
+            RenderPanel();
             WaitMessage();
         }
     }

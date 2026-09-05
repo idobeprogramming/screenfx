@@ -26,6 +26,10 @@ add_executable(screenfx WIN32
     src/graphics/RenderEngine.cpp
     src/graphics/RenderEngine.h
     src/core/Settings.h
+    src/core/SettingsStore.cpp
+    src/core/SettingsStore.h
+    src/ui/SettingsPanel.cpp
+    src/ui/SettingsPanel.h
 )
 
 target_compile_definitions(screenfx PRIVATE
@@ -44,6 +48,7 @@ target_link_libraries(screenfx PRIVATE
     user32
     shell32
     shlwapi
+    comctl32
     d3d11
     dxgi
     d3dcompiler

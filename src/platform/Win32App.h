@@ -4,10 +4,12 @@
 #include <shellapi.h>
 
 #include "../core/Settings.h"
+#include "../core/SettingsStore.h"
 #include "../graphics/CaptureSession.h"
 #include "../graphics/D3D11Context.h"
 #include "../graphics/OverlayWindow.h"
 #include "../graphics/RenderEngine.h"
+#include "../ui/SettingsPanel.h"
 #include "Monitors.h"
 
 #include <cstdint>
@@ -52,6 +54,9 @@ private:
     bool StartCaptureForSelectedMonitor();
     void SetEnabled(bool enabled);
     void RenderAvailableFrame();
+    void EnsurePanel();
+    void RenderPanel();
+    void RestartCaptureIfRunning();
 
     HINSTANCE instance_ = nullptr;
     HWND window_ = nullptr;
@@ -60,12 +65,17 @@ private:
     bool hotkeysRegistered_ = false;
     bool graphicsInitialized_ = false;
     bool shuttingDown_ = false;
+    std::wstring statusText_;
     core::AppSettings settings_{};
     std::vector<MonitorInfo> monitors_;
     graphics::D3D11Context graphics_;
     graphics::OverlayWindow overlay_;
     graphics::CaptureSession capture_;
     graphics::RenderEngine renderer_;
+    ui::SettingsPanel panel_;
+    graphics::CapturedFrame latestFrame_;
+    bool haveFrame_ = false;
+    bool renderRequested_ = false;
     std::uint64_t lastRenderedSequence_ = 0;
     NOTIFYICONDATAW trayIcon_{};
 };

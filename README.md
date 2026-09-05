@@ -8,7 +8,7 @@ ScreenFX est une application Windows qui capture un moniteur, applique des effet
 - Windows Graphics Capture
 - Direct3D 11, DXGI et DirectComposition
 - HLSL Shader Model 5
-- Dear ImGui pour le panneau de réglages
+- Contrôles Win32 natifs pour le panneau de réglages
 - CMake + Ninja + MSVC
 
 Le mode de fréquence par défaut sera sans plafond logiciel. Le débit réellement affiché dépend de Windows, du GPU et de l’écran.
@@ -23,7 +23,7 @@ cmake --build --preset windows-debug
 ctest --preset windows-debug --output-on-failure
 ```
 
-Le générateur Ninja doit être lancé depuis un terminal développeur Visual Studio afin que MSVC soit disponible.
+Le générateur Ninja doit être lancé depuis un terminal développeur Visual Studio afin que MSVC soit disponible. Le panneau ne télécharge aucune dépendance externe.
 
 ## Raccourcis
 
