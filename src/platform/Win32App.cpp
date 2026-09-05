@@ -16,6 +16,12 @@ int MakeControlId(int base) {
     return base;
 }
 
+void ShowStartupError(const wchar_t* operation, DWORD error) {
+    const std::wstring message = std::wstring(L"ScreenFX ne peut pas démarrer.\n\n") + operation +
+                                 L"\nCode Windows : " + std::to_wstring(error);
+    MessageBoxW(nullptr, message.c_str(), L"ScreenFX", MB_ICONERROR | MB_OK);
+}
+
 } // namespace
 
 Win32App::Win32App(HINSTANCE instance, int showCommand)
@@ -46,7 +52,10 @@ bool Win32App::CreateControlWindow(int showCommand) {
     classDescription.hCursor = LoadCursorW(nullptr, IDC_ARROW);
     classDescription.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
 
-    if (RegisterClassExW(&classDescription) == 0 && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) {
+    const ATOM registeredClass = RegisterClassExW(&classDescription);
+    const DWORD classError = registeredClass == 0 ? GetLastError() : ERROR_SUCCESS;
+    if (registeredClass == 0 && classError != ERROR_CLASS_ALREADY_EXISTS) {
+        ShowStartupError(L"Enregistrement de la classe de fenêtre impossible.", classError);
         return false;
     }
 
@@ -64,6 +73,7 @@ bool Win32App::CreateControlWindow(int showCommand) {
         instance_,
         this);
     if (window_ == nullptr) {
+        ShowStartupError(L"Création de la fenêtre de contrôle impossible.", GetLastError());
         return false;
     }
 
