@@ -35,7 +35,7 @@ private:
     static constexpr UINT kHotkeyStop = 3;
 
     static LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lParam);
-    LRESULT HandleMessage(UINT message, WPARAM wParam, LPARAM lParam);
+    LRESULT HandleMessage(HWND window, UINT message, WPARAM wParam, LPARAM lParam);
 
     bool CreateControlWindow(int showCommand);
     bool RegisterHotkeys();

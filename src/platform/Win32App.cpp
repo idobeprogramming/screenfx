@@ -428,10 +428,10 @@ LRESULT CALLBACK Win32App::WindowProc(HWND window, UINT message, WPARAM wParam, 
         app = static_cast<Win32App*>(create->lpCreateParams);
         SetWindowLongPtrW(window, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(app));
     }
-    return app != nullptr ? app->HandleMessage(message, wParam, lParam) : DefWindowProcW(window, message, wParam, lParam);
+    return app != nullptr ? app->HandleMessage(window, message, wParam, lParam) : DefWindowProcW(window, message, wParam, lParam);
 }
 
-LRESULT Win32App::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
+LRESULT Win32App::HandleMessage(HWND window, UINT message, WPARAM wParam, LPARAM lParam) {
     if (panel_.HandleMessage(message, wParam, lParam)) {
         return 0;
     }
@@ -481,7 +481,7 @@ LRESULT Win32App::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
         PostQuitMessage(0);
         return 0;
     default:
-        return DefWindowProcW(window_, message, wParam, lParam);
+        return DefWindowProcW(window, message, wParam, lParam);
     }
 }
 
