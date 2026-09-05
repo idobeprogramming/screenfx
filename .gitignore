@@ -1,0 +1,16 @@
+/build/
+/out/
+/dist/
+*.user
+*.suo
+*.vcxproj.user
+*.cso
+*.pdb
+*.ilk
+*.obj
+*.ipch
+*.tlog
+*.ninja
+/.vs/
+/.cache/
+/.idea/
