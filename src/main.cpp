@@ -12,6 +12,7 @@ int APIENTRY wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int show
         return monitors.empty() ? 1 : 0;
     }
 
+    SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     winrt::init_apartment(winrt::apartment_type::multi_threaded);
     screenfx::platform::Win32App app(instance, showCommand);
     const int result = app.Run();

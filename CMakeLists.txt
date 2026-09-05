@@ -97,6 +97,9 @@ set_target_properties(screenfx PROPERTIES
 
 include(GNUInstallDirs)
 install(TARGETS screenfx RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+install(
+    FILES "${SCREENFX_VERTEX_SHADER}" "${SCREENFX_PIXEL_SHADER}"
+    DESTINATION "${CMAKE_INSTALL_BINDIR}/shaders")
 
 if(SCREENFX_BUILD_TESTS)
     enable_testing()

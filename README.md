@@ -25,6 +25,15 @@ ctest --preset windows-debug --output-on-failure
 
 Le générateur Ninja doit être lancé depuis un terminal développeur Visual Studio afin que MSVC soit disponible. Le panneau ne télécharge aucune dépendance externe.
 
+Pour produire un dossier installable :
+
+```powershell
+cmake --build --preset windows-release
+cmake --install build/release --prefix dist
+```
+
+Le programme installé et ses deux fichiers shader sont placés ensemble dans `dist/bin`.
+
 ## Raccourcis
 
 - `Ctrl+Alt+F10` : activer ou désactiver le filtre

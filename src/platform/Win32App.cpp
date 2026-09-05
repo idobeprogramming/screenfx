@@ -471,6 +471,9 @@ LRESULT Win32App::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
 }
 
 int Win32App::Run() {
+    if (window_ == nullptr) {
+        return 1;
+    }
     MSG message{};
     while (!shuttingDown_) {
         bool processedMessage = false;
