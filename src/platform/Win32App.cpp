@@ -44,9 +44,14 @@ Win32App::~Win32App() {
 }
 
 bool Win32App::CreateControlWindow(int showCommand) {
+    const HINSTANCE module = GetModuleHandleW(nullptr);
+    if (module == nullptr) {
+        ShowStartupError(L"Récupération du module de l’application impossible.", GetLastError());
+        return false;
+    }
     WNDCLASSEXW classDescription{};
     classDescription.cbSize = sizeof(classDescription);
-    classDescription.hInstance = instance_;
+    classDescription.hInstance = module;
     classDescription.lpfnWndProc = &Win32App::WindowProc;
     classDescription.lpszClassName = kWindowClass;
     classDescription.hCursor = LoadCursorW(nullptr, IDC_ARROW);
@@ -70,7 +75,7 @@ bool Win32App::CreateControlWindow(int showCommand) {
         820,
         nullptr,
         nullptr,
-        instance_,
+        module,
         this);
     if (window_ == nullptr) {
         ShowStartupError(L"Création de la fenêtre de contrôle impossible.", GetLastError());
@@ -88,7 +93,7 @@ bool Win32App::CreateControlWindow(int showCommand) {
         48,
         window_,
         reinterpret_cast<HMENU>(static_cast<INT_PTR>(MakeControlId(100))),
-        instance_,
+        module,
         nullptr);
 
     RefreshMonitors();
