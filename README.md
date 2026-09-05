@@ -11,11 +11,11 @@ ScreenFX est une application Windows qui capture un moniteur, applique des effet
 - Contrôles Win32 natifs pour le panneau de réglages
 - CMake + Ninja + MSVC
 
-Le mode de fréquence par défaut sera sans plafond logiciel. Le débit réellement affiché dépend de Windows, du GPU et de l’écran.
+Le mode de fréquence par défaut est sans plafond logiciel. Le débit réellement affiché dépend de Windows, du GPU et de l’écran.
 
 ## Développement
 
-Le projet est conçu pour être exécuté par petits lots. Chaque lot doit être compilé, relu dans le diff, puis commitée avant de passer au suivant.
+Le projet est conçu pour être exécuté par petits lots. Chaque lot doit être compilé, relu dans le diff, puis commité avant de passer au suivant.
 
 ```powershell
 cmake --preset windows-debug
