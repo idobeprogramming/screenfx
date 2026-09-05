@@ -14,6 +14,7 @@
 #include <condition_variable>
 #include <cstdint>
 #include <mutex>
+#include <string>
 
 namespace screenfx::graphics {
 
@@ -41,6 +42,7 @@ public:
     std::uint64_t CapturedFrames() const noexcept { return capturedFrames_.load(std::memory_order_relaxed); }
     std::uint64_t DroppedFrames() const noexcept { return droppedFrames_.load(std::memory_order_relaxed); }
     bool BorderlessCaptureAvailable() const noexcept { return borderlessCaptureAvailable_; }
+    std::wstring LastError() const;
 
 private:
     struct CallbackGuard {
@@ -74,7 +76,12 @@ private:
     std::atomic<bool> running_{false};
     std::atomic<std::uint64_t> capturedFrames_{0};
     std::atomic<std::uint64_t> droppedFrames_{0};
+    std::atomic<bool> callbackErrorNotified_{false};
     bool borderlessCaptureAvailable_ = false;
+    mutable std::mutex errorMutex_;
+    std::wstring lastError_;
+
+    void SetLastError(std::wstring message);
 };
 
 } // namespace screenfx::graphics

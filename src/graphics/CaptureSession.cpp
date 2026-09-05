@@ -3,6 +3,7 @@
 #include <windows.graphics.directx.direct3d11.interop.h>
 
 #include <chrono>
+#include <cwchar>
 
 namespace screenfx::graphics {
 namespace {
@@ -13,6 +14,20 @@ using winrt::Windows::Graphics::Capture::GraphicsCaptureAccess;
 using winrt::Windows::Graphics::Capture::GraphicsCaptureAccessKind;
 using winrt::Windows::Graphics::Capture::GraphicsCaptureItem;
 using winrt::Windows::Graphics::DirectX::Direct3D11::IDirect3DDevice;
+
+std::wstring HResultMessage(HRESULT result) {
+    wchar_t buffer[32]{};
+    swprintf_s(buffer, L"0x%08lX", static_cast<unsigned long>(result));
+    return buffer;
+}
+
+std::wstring DescribeCaptureError(const wchar_t* operation, HRESULT result) {
+    if (result == HRESULT_FROM_WIN32(ERROR_SERVICE_DOES_NOT_EXIST)) {
+        return std::wstring(operation) +
+               L" — service Windows Graphics Capture indisponible dans cette session (0x80070424).";
+    }
+    return std::wstring(operation) + L" (" + HResultMessage(result) + L").";
+}
 
 IDirect3DDevice CreateWinrtDevice(ID3D11Device* device) {
     Microsoft::WRL::ComPtr<IDXGIDevice> dxgiDevice;
@@ -55,15 +70,33 @@ CaptureSession::~CaptureSession() {
     }
 }
 
+std::wstring CaptureSession::LastError() const {
+    std::lock_guard lock(errorMutex_);
+    return lastError_;
+}
+
+void CaptureSession::SetLastError(std::wstring message) {
+    std::lock_guard lock(errorMutex_);
+    lastError_ = std::move(message);
+}
+
 bool CaptureSession::CreateCaptureItem(HMONITOR monitor, GraphicsCaptureItem& item) {
     try {
         auto interopFactory = winrt::get_activation_factory<GraphicsCaptureItem, IGraphicsCaptureItemInterop>();
-        winrt::check_hresult(interopFactory->CreateForMonitor(
+        const HRESULT result = interopFactory->CreateForMonitor(
             monitor,
             winrt::guid_of<GraphicsCaptureItem>(),
-            winrt::put_abi(item)));
+            winrt::put_abi(item));
+        if (FAILED(result)) {
+            SetLastError(DescribeCaptureError(L"CreateForMonitor a échoué", result));
+            return false;
+        }
         return item != nullptr;
+    } catch (const winrt::hresult_error& error) {
+        SetLastError(DescribeCaptureError(L"Windows Graphics Capture a renvoyé", error.code()));
+        return false;
     } catch (...) {
+        SetLastError(L"Windows Graphics Capture a renvoyé une erreur inconnue.");
         return false;
     }
 }
@@ -89,8 +122,11 @@ bool CaptureSession::SetCaptureRate(bool uncapped) {
 
 bool CaptureSession::Start(HMONITOR monitor, SIZE size, bool uncapped) {
     Stop();
+    SetLastError({});
     borderlessCaptureAvailable_ = false;
+    callbackErrorNotified_.store(false, std::memory_order_relaxed);
     if (monitor == nullptr || size.cx <= 0 || size.cy <= 0 || graphics_.Device() == nullptr) {
+        SetLastError(L"Le moniteur, sa taille ou le périphérique Direct3D est invalide.");
         return false;
     }
 
@@ -128,7 +164,12 @@ bool CaptureSession::Start(HMONITOR monitor, SIZE size, bool uncapped) {
         consumedSequence_ = 0;
         session_.StartCapture();
         return true;
+    } catch (const winrt::hresult_error& error) {
+        SetLastError(DescribeCaptureError(L"Initialisation de la capture impossible", error.code()));
+        Stop();
+        return false;
     } catch (...) {
+        SetLastError(L"Initialisation de la capture impossible (erreur inconnue).");
         Stop();
         return false;
     }
@@ -158,6 +199,7 @@ void CaptureSession::Stop() {
     item_ = nullptr;
     winrtDevice_ = nullptr;
     borderlessCaptureAvailable_ = false;
+    callbackErrorNotified_.store(false, std::memory_order_relaxed);
     {
         std::unique_lock lock(callbackMutex_);
         callbackCv_.wait(lock, [this] { return activeCallbacks_ == 0; });
@@ -219,11 +261,22 @@ void CaptureSession::OnFrameArrived(
         graphics_.ImmediateContext()->CopyResource(latestTexture_.Get(), sourceTexture.Get());
         latestSequence_++;
         capturedFrames_.fetch_add(1, std::memory_order_relaxed);
+        callbackErrorNotified_.store(false, std::memory_order_relaxed);
         if (frameEvent_ != nullptr) {
             SetEvent(frameEvent_);
         }
-    } catch (...) {
+    } catch (const winrt::hresult_error& error) {
+        SetLastError(DescribeCaptureError(L"FrameArrived — copie GPU impossible", error.code()));
         droppedFrames_.fetch_add(1, std::memory_order_relaxed);
+        if (!callbackErrorNotified_.exchange(true, std::memory_order_relaxed) && frameEvent_ != nullptr) {
+            SetEvent(frameEvent_);
+        }
+    } catch (...) {
+        SetLastError(L"Capture/FrameArrived: erreur inconnue pendant la copie GPU.");
+        droppedFrames_.fetch_add(1, std::memory_order_relaxed);
+        if (!callbackErrorNotified_.exchange(true, std::memory_order_relaxed) && frameEvent_ != nullptr) {
+            SetEvent(frameEvent_);
+        }
     }
 }
 

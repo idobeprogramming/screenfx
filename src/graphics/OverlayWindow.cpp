@@ -54,6 +54,7 @@ void OverlayWindow::Destroy() {
         DestroyWindow(window_);
         window_ = nullptr;
     }
+    captureExcluded_ = false;
 }
 
 void OverlayWindow::SetBounds(const RECT& bounds) {

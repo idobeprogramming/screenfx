@@ -34,6 +34,14 @@ cmake --install build/release --prefix dist
 
 Le programme installé et ses deux fichiers shader sont placés ensemble dans `dist/bin`.
 
+## Dépannage
+
+L’overlay reste masqué tant qu’aucune image valide n’a été reçue. Si le panneau indique
+`0x80070424`, le service Windows Graphics Capture n’est pas disponible dans la session
+qui a lancé le programme. Fermez cette instance et relancez `ScreenFX.exe` depuis la
+session Windows interactive de l’utilisateur, plutôt que depuis un service ou un compte
+technique.
+
 ## Raccourcis
 
 - `Ctrl+Alt+F10` : activer ou désactiver le filtre

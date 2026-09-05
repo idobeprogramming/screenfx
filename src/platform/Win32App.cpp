@@ -223,8 +223,10 @@ bool Win32App::InitializeGraphics() {
         return false;
     }
     if (!StartCaptureForSelectedMonitor()) {
+        const std::wstring detail = capture_.LastError();
         ShutdownGraphics();
-        UpdateStatus(L"Impossible de capturer le moniteur sélectionné.");
+        UpdateStatus(detail.empty() ? L"Impossible de capturer le moniteur sélectionné."
+                                    : L"Impossible de capturer le moniteur sélectionné — " + detail);
         return false;
     }
     graphicsInitialized_ = true;
@@ -271,8 +273,8 @@ void Win32App::SetEnabled(bool enabled) {
     enabled_ = enabled;
     settings_.enabled = enabled_;
     if (enabled_) {
-        overlay_.Show();
-        UpdateStatus(L"Filtre actif — capture en cours.");
+        overlay_.Hide();
+        UpdateStatus(L"Filtre actif — attente de la première image.");
     } else {
         ShutdownGraphics();
         overlay_.Hide();
@@ -299,11 +301,22 @@ void Win32App::RenderAvailableFrame() {
         renderRequested_ = true;
     }
     if (!haveFrame_ || !renderRequested_) {
+        if (!haveFrame_) {
+            const std::wstring detail = capture_.LastError();
+            if (!detail.empty()) {
+                const std::wstring waitingStatus = L"Filtre actif — " + detail;
+                if (statusText_ != waitingStatus) {
+                    UpdateStatus(waitingStatus);
+                }
+            }
+        }
         return;
     }
     if (renderer_.Render(latestFrame_, settings_.effects, settings_.framePacing)) {
         lastRenderedSequence_ = latestFrame_.sequence;
         renderRequested_ = false;
+        overlay_.Show();
+        UpdateStatus(L"Filtre actif — capture en cours.");
     } else {
         // Wait for a fresh capture before retrying. This avoids a tight retry loop
         // when a device or swap chain has just reported an error.

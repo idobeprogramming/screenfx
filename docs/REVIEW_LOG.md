@@ -24,3 +24,9 @@ Les lots sont validés après compilation, test de fumée et revue du diff.
 
 - Vérifications : compilation Release, test `screenfx_smoke` en Release et installation CMake dans un préfixe de test.
 - Revue : le processus est déclaré sensible au DPI par moniteur, l’exécutable retourne une erreur si sa fenêtre ne peut pas être créée, et l’installation embarque les deux fichiers shader dans `bin/shaders`.
+
+## P26 — éviter l’écran noir sans capture
+
+- Vérifications : compilation Debug et Release, test de fumée CTest dans les deux configurations.
+- Revue : l’overlay reste caché jusqu’au rendu d’une première frame valide ; les erreurs de `FrameArrived` sont conservées et affichées dans le panneau ; la destruction de l’overlay réinitialise son état d’exclusion.
+- Diagnostic observé : dans une session sans service Windows Graphics Capture disponible, `CreateForMonitor` renvoie `0x80070424` et aucune frame ne peut être rendue. Le bureau reste visible et le panneau explique la cause.
