@@ -154,8 +154,7 @@ void RenderEngine::Shutdown() {
     compositionTarget_.Reset();
     compositionVisual_.Reset();
     compositionDevice_.Reset();
-    sourceView_.Reset();
-    sourceTexture_.Reset();
+    ClearSourceViews();
     renderTarget_.Reset();
     swapChain_.Reset();
     vertexShader_.Reset();
@@ -175,6 +174,7 @@ bool RenderEngine::Resize(const RECT& bounds) {
     std::lock_guard lock(graphics_.Mutex());
     graphics_.ImmediateContext()->OMSetRenderTargets(0, nullptr, nullptr);
     renderTarget_.Reset();
+    ClearSourceViews();
     const UINT width = static_cast<UINT>(bounds.right - bounds.left);
     const UINT height = static_cast<UINT>(bounds.bottom - bounds.top);
     if (!Check(swapChain_->ResizeBuffers(2, width, height, DXGI_FORMAT_B8G8R8A8_UNORM,
@@ -185,12 +185,31 @@ bool RenderEngine::Resize(const RECT& bounds) {
     return CreateBackBuffer();
 }
 
+void RenderEngine::ClearSourceViews() {
+    sourceView_.Reset();
+    sourceTexture_.Reset();
+    sourceViews_ = {};
+    nextSourceView_ = 0;
+}
+
 bool RenderEngine::CreateSourceView(const CapturedFrame& frame) {
     if (!frame.texture) return Check(E_INVALIDARG);
     if (frame.texture.Get() == sourceTexture_.Get() && sourceView_) return true;
-    sourceView_.Reset();
+    for (const auto& entry : sourceViews_) {
+        if (entry.texture.Get() == frame.texture.Get()) {
+            sourceTexture_ = entry.texture;
+            sourceView_ = entry.view;
+            return true;
+        }
+    }
+    Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> view;
+    if (!Check(graphics_.Device()->CreateShaderResourceView(frame.texture.Get(), nullptr, view.GetAddressOf())))
+        return false;
+    sourceViews_[nextSourceView_] = {frame.texture, view};
+    nextSourceView_ = (nextSourceView_ + 1) % sourceViews_.size();
     sourceTexture_ = frame.texture;
-    return Check(graphics_.Device()->CreateShaderResourceView(sourceTexture_.Get(), nullptr, sourceView_.GetAddressOf()));
+    sourceView_ = std::move(view);
+    return true;
 }
 
 bool RenderEngine::DrawFrame(
@@ -248,8 +267,7 @@ bool RenderEngine::DrawFrame(
     constants->tintIntensity = Clamp(effects.tintIntensity, 0.0F, 1.0F);
     context->Unmap(constantBuffer_.Get(), 0);
 
-    const float clearColor[4]{0.0F, 0.0F, 0.0F, 1.0F};
-    context->ClearRenderTargetView(renderTarget_.Get(), clearColor);
+    // The full-screen triangle overwrites every pixel, including alpha.
     context->OMSetRenderTargets(1, renderTarget_.GetAddressOf(), nullptr);
     D3D11_VIEWPORT viewport{};
     viewport.Width = static_cast<float>(bounds_.right - bounds_.left);

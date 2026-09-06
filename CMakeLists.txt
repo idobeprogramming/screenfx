@@ -109,6 +109,22 @@ install(
 
 if(SCREENFX_BUILD_TESTS)
     enable_testing()
+    set(SCREENFX_REFERENCE_SHADER "${CMAKE_CURRENT_BINARY_DIR}/shaders/screenfx_reference_ps.cso")
+    add_custom_command(OUTPUT "${SCREENFX_REFERENCE_SHADER}"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/shaders"
+        COMMAND "${SCREENFX_FXC}" /nologo /T ps_5_0 /E PSMain /O3 /Fo "${SCREENFX_REFERENCE_SHADER}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/reference/screenfx_pre_optimization.hlsl"
+        DEPENDS tests/reference/screenfx_pre_optimization.hlsl VERBATIM)
+    add_custom_target(screenfx_reference_shader DEPENDS "${SCREENFX_REFERENCE_SHADER}")
+    add_executable(screenfx_performance_tests tests/PerformanceBench.cpp
+        src/graphics/D3D11Context.cpp src/graphics/RenderEngine.cpp)
+    target_include_directories(screenfx_performance_tests PRIVATE src)
+    target_compile_definitions(screenfx_performance_tests PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
+    target_compile_options(screenfx_performance_tests PRIVATE /W4 /permissive- /EHsc /utf-8)
+    target_link_libraries(screenfx_performance_tests PRIVATE user32 d3d11 dxgi dcomp d3dcompiler windowsapp)
+    add_dependencies(screenfx_performance_tests screenfx_shader_assets screenfx_reference_shader)
+    add_test(NAME screenfx_performance COMMAND screenfx_performance_tests)
+    set_tests_properties(screenfx_performance PROPERTIES TIMEOUT 60)
     add_test(NAME screenfx_smoke COMMAND screenfx --self-test)
     set_tests_properties(screenfx_smoke PROPERTIES WORKING_DIRECTORY "$<TARGET_FILE_DIR:screenfx>")
     add_executable(screenfx_graphics_tests

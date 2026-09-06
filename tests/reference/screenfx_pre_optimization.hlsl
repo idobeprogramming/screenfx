@@ -72,85 +72,53 @@ float Hash21(float2 value)
 
 float3 SampleChromatic(float2 uv)
 {
+    float2 offset = float2(chromaticAberration, chromaticAberration) / max(screenSize, float2(1.0, 1.0));
     float3 result;
-    [branch]
-    if (chromaticAberration == 0.0)
-    {
-        result = SampleRgb(uv);
-    }
-    else
-    {
-        float2 offset = float2(chromaticAberration, chromaticAberration) / max(screenSize, float2(1.0, 1.0));
-        result.r = SampleRgb(uv + float2(offset.x, 0.0)).r;
-        result.g = SampleRgb(uv).g;
-        result.b = SampleRgb(uv - float2(offset.x, 0.0)).b;
-    }
+    result.r = SampleRgb(uv + float2(offset.x, 0.0)).r;
+    result.g = SampleRgb(uv).g;
+    result.b = SampleRgb(uv - float2(offset.x, 0.0)).b;
     return result;
 }
 
 float3 ApplyBloom(float2 uv, float3 color)
 {
-    [branch]
-    if (bloomIntensity > 0.001 && bloomThreshold < 1.0)
+    if (bloomIntensity <= 0.001)
     {
-        float2 texel = bloomRadius / max(screenSize, float2(1.0, 1.0));
-        float3 blurred = 0.0;
-        blurred += SampleRgb(uv + float2(texel.x, 0.0));
-        blurred += SampleRgb(uv - float2(texel.x, 0.0));
-        blurred += SampleRgb(uv + float2(0.0, texel.y));
-        blurred += SampleRgb(uv - float2(0.0, texel.y));
-        blurred *= 0.25;
-        float brightnessValue = max(color.r, max(color.g, color.b));
-        float mask = smoothstep(bloomThreshold, 1.0, brightnessValue);
-        color += blurred * mask * bloomIntensity;
+        return color;
     }
-    return color;
+    float2 texel = bloomRadius / max(screenSize, float2(1.0, 1.0));
+    float3 blurred = 0.0;
+    blurred += SampleRgb(uv + float2(texel.x, 0.0));
+    blurred += SampleRgb(uv - float2(texel.x, 0.0));
+    blurred += SampleRgb(uv + float2(0.0, texel.y));
+    blurred += SampleRgb(uv - float2(0.0, texel.y));
+    blurred *= 0.25;
+    float brightnessValue = max(color.r, max(color.g, color.b));
+    float mask = bloomThreshold >= 1.0 ? 0.0 : smoothstep(bloomThreshold, 1.0, brightnessValue);
+    return color + blurred * mask * bloomIntensity;
 }
 
 float3 ApplyColour(float3 color)
 {
-    [branch]
-    if (brightness != 0.0 || contrast != 1.0)
-    {
-        color += brightness;
-        color = (color - 0.5) * contrast + 0.5;
-    }
-    [branch]
-    if (saturation != 1.0 || grayscale != 0.0)
-    {
-        float luminance = dot(color, float3(0.2126, 0.7152, 0.0722));
-        color = lerp(luminance.xxx, color, saturation);
-        color = lerp(color, luminance.xxx, grayscale);
-    }
-    [branch]
-    if (sepia != 0.0)
-    {
-        float3 sepiaColor = float3(
-            dot(color, float3(0.393, 0.769, 0.189)),
-            dot(color, float3(0.349, 0.686, 0.168)),
-            dot(color, float3(0.272, 0.534, 0.131)));
-        color = lerp(color, sepiaColor, sepia);
-    }
-    color = max(color, 0.0);
-    [branch]
-    if (gammaValue != 1.0)
-    {
-        color = pow(color, 1.0 / gammaValue);
-    }
-    return color;
+    color += brightness;
+    color = (color - 0.5) * contrast + 0.5;
+    float luminance = dot(color, float3(0.2126, 0.7152, 0.0722));
+    color = lerp(luminance.xxx, color, saturation);
+    color = lerp(color, luminance.xxx, grayscale);
+    float3 sepiaColor = float3(
+        dot(color, float3(0.393, 0.769, 0.189)),
+        dot(color, float3(0.349, 0.686, 0.168)),
+        dot(color, float3(0.272, 0.534, 0.131)));
+    color = lerp(color, sepiaColor, sepia);
+    return pow(max(color, 0.0), 1.0 / gammaValue);
 }
 
 float3 ApplyCrt(float2 uv, float3 color)
 {
-    [branch]
-    if (scanlineIntensity != 0.0 && scanlineThickness != 0.0)
-    {
-        float linePosition = uv.y * screenSize.y / max(scanlineSpacing, 1.0);
-        float lineFactor = lerp(1.0, 1.0 - scanlineThickness, step(frac(linePosition), 0.5));
-        color *= lerp(1.0, lineFactor, scanlineIntensity);
-    }
+    float linePosition = uv.y * screenSize.y / max(scanlineSpacing, 1.0);
+    float lineFactor = lerp(1.0, 1.0 - scanlineThickness, step(frac(linePosition), 0.5));
+    color *= lerp(1.0, lineFactor, scanlineIntensity);
 
-    [branch]
     if (phosphorIntensity > 0.001)
     {
         float channel = fmod(floor(uv.x * screenSize.x), 3.0);
@@ -162,35 +130,24 @@ float3 ApplyCrt(float2 uv, float3 color)
 
 float3 ApplyVignette(float2 uv, float3 color)
 {
-    [branch]
-    if (vignetteIntensity != 0.0)
-    {
-        float2 centered = uv * 2.0 - 1.0;
-        float distanceFromCenter = length(centered);
-        float vignette = smoothstep(vignetteWidth, 1.414, distanceFromCenter);
-        color *= 1.0 - vignette * vignetteIntensity;
-    }
-    return color;
+    float2 centered = uv * 2.0 - 1.0;
+    float distanceFromCenter = length(centered);
+    float vignette = smoothstep(vignetteWidth, 1.414, distanceFromCenter);
+    return color * (1.0 - vignette * vignetteIntensity);
 }
 
 float4 PSMain(VertexOutput input) : SV_Target
 {
-    [branch]
-    if (globalIntensity == 0.0)
-    {
-        return float4(saturate(SampleRgb(input.uv)), 1.0);
-    }
     float2 uv = input.uv;
     float2 originalUv = uv;
-    [branch]
     if (pixelSize > 1.001)
     {
         float2 pixels = max(screenSize / pixelSize, float2(1.0, 1.0));
         uv = (floor(uv * pixels) + 0.5) / pixels;
     }
 
+    float3 original = SampleRgb(originalUv);
     float3 color = SampleChromatic(uv);
-    [branch]
     if (sharpen > 0.001)
     {
         float2 texel = 1.0 / max(screenSize, float2(1.0, 1.0));
@@ -203,7 +160,6 @@ float4 PSMain(VertexOutput input) : SV_Target
     color = ApplyBloom(uv, color);
     color = ApplyVignette(uv, color);
 
-    [branch]
     if (grainIntensity > 0.001)
     {
         float2 grainUv = floor(uv * screenSize / max(grainSize, 0.25));
@@ -211,16 +167,7 @@ float4 PSMain(VertexOutput input) : SV_Target
         color = saturate(color + grain * grainIntensity);
     }
 
-    [branch]
-    if (tintIntensity != 0.0)
-    {
-        color *= lerp(1.0.xxx, tintColor, tintIntensity);
-    }
-    [branch]
-    if (globalIntensity != 1.0)
-    {
-        float3 original = SampleRgb(originalUv);
-        color = lerp(original, color, globalIntensity);
-    }
+    color *= lerp(1.0.xxx, tintColor, tintIntensity);
+    color = lerp(original, color, globalIntensity);
     return float4(saturate(color), 1.0);
 }
