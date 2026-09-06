@@ -94,6 +94,25 @@ void TestShaderPixels() {
     effects = {}; effects.bloomIntensity = 1; effects.bloomThreshold = 1;
     Require(graphics::RenderEngineTestAccess::Draw(engine, frame, effects), "Bloom threshold boundary draw failed");
     Require(ReadPixels(device, output.Get()) == identity, "Bloom threshold one produced invalid color");
+    effects = {};
+    effects.tintRed = 1.0F; effects.tintGreen = 0.5F; effects.tintBlue = 0.25F;
+    for (const float intensity : {1.0F, 0.5F}) {
+        effects.tintIntensity = intensity;
+        Require(graphics::RenderEngineTestAccess::Draw(engine, frame, effects), "Tint draw failed");
+        const auto tinted = ReadPixels(device, output.Get());
+        const float factors[]{1.0F - 0.75F * intensity, 1.0F - 0.5F * intensity, 1.0F, 1.0F};
+        for (size_t i = 0; i < pixels.size(); ++i) {
+            const int expected = static_cast<int>(std::lround(pixels[i] * factors[i % 4]));
+            Require(std::abs(int(tinted[i]) - expected) <= 1, "Tint channels or intensity are incorrect");
+        }
+    }
+    effects.tintIntensity = 0;
+    Require(graphics::RenderEngineTestAccess::Draw(engine, frame, effects), "Zero tint draw failed");
+    Require(ReadPixels(device, output.Get()) == identity, "Tint intensity zero changed the image");
+    effects.tintIntensity = 1; effects.globalIntensity = 0;
+    effects.scanlineIntensity = 1;
+    Require(graphics::RenderEngineTestAccess::Draw(engine, frame, effects), "Tint bypass draw failed");
+    Require(ReadPixels(device, output.Get()) == identity, "Global intensity zero did not bypass tint and CRT");
     frame.texture.Reset();
     Require(!graphics::RenderEngineTestAccess::Draw(engine, frame, effects), "Null source accepted");
     engine.Shutdown();
@@ -110,7 +129,7 @@ void TestShaderPixels() {
             }
         }
     }
-    std::cout << "PASS: shader identity, CRT pixels, bypass, bloom boundary, invalid source, D3D11 validation\n";
+    std::cout << "PASS: shader identity, CRT pixels, tint channels/intensity/bypass, bloom boundary, invalid source, D3D11 validation\n";
 }
 
 // Opt-in real desktop test: no recording; textures stay in memory and the overlay stays hidden.

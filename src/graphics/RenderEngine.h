@@ -55,6 +55,11 @@ private:
         float grainIntensity;
         float grainSize;
         float padding[3];
+
+        float tintRed;
+        float tintGreen;
+        float tintBlue;
+        float tintIntensity;
     };
 
     bool CreateSwapChain(const RECT& bounds);

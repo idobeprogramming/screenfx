@@ -6,6 +6,7 @@
 #include <fstream>
 #include <vector>
 #include <cmath>
+#include <cstddef>
 
 namespace screenfx::graphics {
 namespace {
@@ -114,6 +115,9 @@ bool RenderEngine::CreateShaders() {
     constantDescription.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
     constantDescription.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
     static_assert(sizeof(ShaderConstants) % 16 == 0);
+    static_assert(sizeof(ShaderConstants) == 128);
+    static_assert(offsetof(ShaderConstants, tintRed) == 112);
+    static_assert(offsetof(ShaderConstants, tintIntensity) == 124);
     if (!Check(graphics_.Device()->CreateBuffer(&constantDescription, nullptr, constantBuffer_.GetAddressOf()))) {
         return false;
     }
@@ -238,6 +242,10 @@ bool RenderEngine::DrawFrame(
     constants->grainIntensity = Clamp(effects.grainIntensity, 0.0F, 1.0F);
     constants->grainSize = Clamp(effects.grainSize, 0.25F, 8.0F);
     constants->padding[0] = constants->padding[1] = constants->padding[2] = 0.0F;
+    constants->tintRed = Clamp(effects.tintRed, 0.0F, 1.0F);
+    constants->tintGreen = Clamp(effects.tintGreen, 0.0F, 1.0F);
+    constants->tintBlue = Clamp(effects.tintBlue, 0.0F, 1.0F);
+    constants->tintIntensity = Clamp(effects.tintIntensity, 0.0F, 1.0F);
     context->Unmap(constantBuffer_.Get(), 0);
 
     const float clearColor[4]{0.0F, 0.0F, 0.0F, 1.0F};

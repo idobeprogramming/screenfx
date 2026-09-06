@@ -58,3 +58,9 @@ Les premiers lots ci-dessous décrivent leurs vérifications historiques. Le tes
 - Vérifications finales réussies : script en Debug et Release, CTest 3/3 dans chaque configuration, installation, puis test `--desktop` sur la version Release dans la session interactive. Les empreintes de l’exécutable et des deux shaders correspondent entre la compilation et la distribution. `git diff --check` ne signale pas d’erreur.
 - Livrables : `build/release/ScreenFX.exe` et `dist/bin/ScreenFX.exe`, chacun accompagné de son dossier `shaders`. L’instance Debug ouverte pour les tests a été fermée.
 - Documentation : lancement par double-clic, effets initialement neutres, raccourcis, reconstruction sans CMake dans le PATH, dépannage et limites de compatibilité décrits dans le README.
+
+## P30 — GPU color tint
+
+- Added RGB tint and strength, with neutral defaults compatible with existing settings. Tint multiplies the processed image before the global effect blend; setting tint strength or global intensity to zero bypasses it.
+- Reviewed the CPU/HLSL constant layout and asserted its size and offsets. Pixel tests cover exact RGB channels, 50% strength and both bypass controls.
+- Validation: Debug and Release graphics tests passed, including the Release desktop test for visible presentation, capture exclusion, click-through hit testing, resizing and three capture restarts.

@@ -33,6 +33,11 @@ struct EffectSettings {
     float vignetteWidth = 0.65F;
     float grainIntensity = 0.0F;
     float grainSize = 1.0F;
+
+    float tintRed = 1.0F;
+    float tintGreen = 1.0F;
+    float tintBlue = 1.0F;
+    float tintIntensity = 0.0F;
 };
 
 struct AppSettings {

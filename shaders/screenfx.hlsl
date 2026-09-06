@@ -26,6 +26,9 @@ cbuffer ScreenFxParams : register(b0)
     float grainIntensity;
     float grainSize;
     float3 padding;
+
+    float3 tintColor;
+    float tintIntensity;
 };
 
 Texture2D sourceTexture : register(t0);
@@ -164,6 +167,7 @@ float4 PSMain(VertexOutput input) : SV_Target
         color = saturate(color + grain * grainIntensity);
     }
 
+    color *= lerp(1.0.xxx, tintColor, tintIntensity);
     color = lerp(original, color, globalIntensity);
     return float4(saturate(color), 1.0);
 }
