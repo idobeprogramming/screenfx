@@ -1,296 +1,168 @@
 #include "CaptureSession.h"
-
 #include <windows.graphics.directx.direct3d11.interop.h>
-
-#include <chrono>
+#include <array>
+#include <mutex>
 #include <cwchar>
+#include <utility>
 
 namespace screenfx::graphics {
-namespace {
-
-using winrt::Windows::Foundation::TimeSpan;
+using namespace winrt::Windows::Graphics::Capture;
 using winrt::Windows::Graphics::DirectX::DirectXPixelFormat;
-using winrt::Windows::Graphics::Capture::GraphicsCaptureAccess;
-using winrt::Windows::Graphics::Capture::GraphicsCaptureAccessKind;
-using winrt::Windows::Graphics::Capture::GraphicsCaptureItem;
 using winrt::Windows::Graphics::DirectX::Direct3D11::IDirect3DDevice;
-
-std::wstring HResultMessage(HRESULT result) {
-    wchar_t buffer[32]{};
-    swprintf_s(buffer, L"0x%08lX", static_cast<unsigned long>(result));
-    return buffer;
+namespace {
+std::wstring CaptureError(const wchar_t* operation, HRESULT result) {
+    wchar_t code[32]{};
+    swprintf_s(code, L"0x%08lX", static_cast<unsigned long>(result));
+    return std::wstring(operation) + L" (" + code + L").";
 }
-
-std::wstring DescribeCaptureError(const wchar_t* operation, HRESULT result) {
-    if (result == HRESULT_FROM_WIN32(ERROR_SERVICE_DOES_NOT_EXIST)) {
-        return std::wstring(operation) +
-               L" — service Windows Graphics Capture indisponible dans cette session (0x80070424).";
+struct FrameCloser {
+    Direct3D11CaptureFrame frame{nullptr};
+    ~FrameCloser() { if (frame) { try { frame.Close(); } catch (...) {} } }
+};
+struct TextureSlot {
+    Microsoft::WRL::ComPtr<ID3D11Texture2D> texture;
+    SIZE size{};
+};
+}
+struct CaptureSession::State {
+    mutable std::mutex mutex;
+    bool running = false;
+    D3D11Context* graphics = nullptr;
+    HANDLE event = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+    IDirect3DDevice device{nullptr};
+    winrt::Windows::Graphics::SizeInt32 poolSize{};
+    CapturedFrame latest;
+    std::array<std::shared_ptr<TextureSlot>, 4> slots;
+    std::uint64_t captured = 0, dropped = 0;
+    std::wstring error;
+    ~State() { if (event) CloseHandle(event); }
+    void Fail(std::wstring message) {
+        error = std::move(message); running = false;
+        if (event) SetEvent(event);
     }
-    return std::wstring(operation) + L" (" + HResultMessage(result) + L").";
-}
+};
+CaptureSession::CaptureSession(D3D11Context& graphics) : graphics_(graphics), state_(std::make_shared<State>()) {}
+CaptureSession::~CaptureSession() { Stop(); }
+bool CaptureSession::Running() const { std::lock_guard lock(state_->mutex); return state_->running; }
+HANDLE CaptureSession::FrameEvent() const noexcept { return state_->event; }
+std::uint64_t CaptureSession::CapturedFrames() const { std::lock_guard lock(state_->mutex); return state_->captured; }
+std::uint64_t CaptureSession::DroppedFrames() const { std::lock_guard lock(state_->mutex); return state_->dropped; }
+std::wstring CaptureSession::LastError() const { std::lock_guard lock(state_->mutex); return state_->error; }
 
-IDirect3DDevice CreateWinrtDevice(ID3D11Device* device) {
-    Microsoft::WRL::ComPtr<IDXGIDevice> dxgiDevice;
-    winrt::check_hresult(device->QueryInterface(IID_PPV_ARGS(dxgiDevice.GetAddressOf())));
-    winrt::com_ptr<::IInspectable> inspectable;
-    winrt::check_hresult(CreateDirect3D11DeviceFromDXGIDevice(dxgiDevice.Get(), inspectable.put()));
-    return inspectable.as<IDirect3DDevice>();
-}
-
-} // namespace
-
-CaptureSession::CaptureSession(D3D11Context& graphics) : graphics_(graphics) {
-    frameEvent_ = CreateEventW(nullptr, FALSE, FALSE, nullptr);
-}
-
-CaptureSession::CallbackGuard::CallbackGuard(CaptureSession* value) : owner(value) {
-    if (owner != nullptr) {
-        std::lock_guard lock(owner->callbackMutex_);
-        ++owner->activeCallbacks_;
+bool CaptureSession::Start(HMONITOR monitor, SIZE size, bool /*uncapped*/) {
+    Stop(); state_ = std::make_shared<State>();
+    auto state = state_;
+    if (!state->event || !monitor || size.cx <= 0 || size.cy <= 0 || !graphics_.Device()) {
+        state->Fail(L"Le moniteur ou les ressources de capture ne sont pas disponibles."); return false;
     }
-}
-
-CaptureSession::CallbackGuard::~CallbackGuard() {
-    if (owner != nullptr) {
-        {
-            std::lock_guard lock(owner->callbackMutex_);
-            if (owner->activeCallbacks_ > 0) {
-                --owner->activeCallbacks_;
-            }
-        }
-        owner->callbackCv_.notify_all();
-    }
-}
-
-CaptureSession::~CaptureSession() {
-    Stop();
-    if (frameEvent_ != nullptr) {
-        CloseHandle(frameEvent_);
-        frameEvent_ = nullptr;
-    }
-}
-
-std::wstring CaptureSession::LastError() const {
-    std::lock_guard lock(errorMutex_);
-    return lastError_;
-}
-
-void CaptureSession::SetLastError(std::wstring message) {
-    std::lock_guard lock(errorMutex_);
-    lastError_ = std::move(message);
-}
-
-bool CaptureSession::CreateCaptureItem(HMONITOR monitor, GraphicsCaptureItem& item) {
     try {
-        auto interopFactory = winrt::get_activation_factory<GraphicsCaptureItem, IGraphicsCaptureItemInterop>();
-        const HRESULT result = interopFactory->CreateForMonitor(
-            monitor,
-            winrt::guid_of<GraphicsCaptureItem>(),
-            winrt::put_abi(item));
-        if (FAILED(result)) {
-            SetLastError(DescribeCaptureError(L"CreateForMonitor a échoué", result));
-            return false;
-        }
-        return item != nullptr;
-    } catch (const winrt::hresult_error& error) {
-        SetLastError(DescribeCaptureError(L"Windows Graphics Capture a renvoyé", error.code()));
-        return false;
-    } catch (...) {
-        SetLastError(L"Windows Graphics Capture a renvoyé une erreur inconnue.");
-        return false;
-    }
-}
-
-bool CaptureSession::SetCaptureRate(bool uncapped) {
-    if (!session_) {
-        return false;
-    }
-
-    try {
-        if (auto session5 = session_.try_as<winrt::Windows::Graphics::Capture::IGraphicsCaptureSession5>()) {
-            // Zero asks Windows Graphics Capture to deliver frames as soon as the
-            // compositor has a new frame. Present() controls the optional VSync
-            // policy; the uncapped path adds no software frame interval.
-            const auto interval = uncapped ? std::chrono::milliseconds(0) : std::chrono::milliseconds(16);
-            session5.MinUpdateInterval(TimeSpan(interval));
-            return true;
-        }
-    } catch (...) {
-    }
-    return false;
-}
-
-bool CaptureSession::Start(HMONITOR monitor, SIZE size, bool uncapped) {
-    Stop();
-    SetLastError({});
-    borderlessCaptureAvailable_ = false;
-    callbackErrorNotified_.store(false, std::memory_order_relaxed);
-    if (monitor == nullptr || size.cx <= 0 || size.cy <= 0 || graphics_.Device() == nullptr) {
-        SetLastError(L"Le moniteur, sa taille ou le périphérique Direct3D est invalide.");
-        return false;
-    }
-
-    GraphicsCaptureItem item{nullptr};
-    if (!CreateCaptureItem(monitor, item)) {
-        return false;
-    }
-
-    try {
-        winrtDevice_ = CreateWinrtDevice(graphics_.Device());
-        item_ = item;
-        framePool_ = winrt::Windows::Graphics::Capture::Direct3D11CaptureFramePool::CreateFreeThreaded(
-            winrtDevice_,
-            DirectXPixelFormat::B8G8R8A8UIntNormalized,
-            3,
-            winrt::Windows::Graphics::SizeInt32{size.cx, size.cy});
+        auto factory = winrt::get_activation_factory<GraphicsCaptureItem, IGraphicsCaptureItemInterop>();
+        winrt::check_hresult(factory->CreateForMonitor(monitor, winrt::guid_of<GraphicsCaptureItem>(), winrt::put_abi(item_)));
+        Microsoft::WRL::ComPtr<IDXGIDevice> dxgi;
+        winrt::check_hresult(graphics_.Device()->QueryInterface(IID_PPV_ARGS(dxgi.GetAddressOf())));
+        winrt::com_ptr<IInspectable> inspectable;
+        winrt::check_hresult(CreateDirect3D11DeviceFromDXGIDevice(dxgi.Get(), inspectable.put()));
+        state->device = inspectable.as<IDirect3DDevice>();
+        state->poolSize = item_.Size();
+        if (state->poolSize.Width <= 0 || state->poolSize.Height <= 0) winrt::throw_hresult(E_INVALIDARG);
+        state->graphics = &graphics_;
+        framePool_ = Direct3D11CaptureFramePool::CreateFreeThreaded(state->device,
+            DirectXPixelFormat::B8G8R8A8UIntNormalized, 3, state->poolSize);
         session_ = framePool_.CreateCaptureSession(item_);
-        session_.IsCursorCaptureEnabled(false);
-
-        if (auto session3 = session_.try_as<winrt::Windows::Graphics::Capture::IGraphicsCaptureSession3>()) {
-            try {
-                session3.IsBorderRequired(false);
-                borderlessCaptureAvailable_ = true;
-            } catch (...) {
-                borderlessCaptureAvailable_ = false;
-            }
+        if (auto optional = session_.try_as<IGraphicsCaptureSession2>()) optional.IsCursorCaptureEnabled(false);
+        if (auto optional = session_.try_as<IGraphicsCaptureSession3>()) {
+            try { optional.IsBorderRequired(false); borderlessCaptureAvailable_ = !optional.IsBorderRequired(); } catch (...) {}
         }
-        SetCaptureRate(uncapped);
-        frameArrivedToken_ = framePool_.FrameArrived({this, &CaptureSession::OnFrameArrived});
-        frameHandlerRegistered_ = true;
-        running_.store(true, std::memory_order_release);
-        capturedFrames_.store(0, std::memory_order_relaxed);
-        droppedFrames_.store(0, std::memory_order_relaxed);
-        latestSequence_ = 0;
-        consumedSequence_ = 0;
-        session_.StartCapture();
-        return true;
+        // Presentation controls VSync; neither capture mode adds a software frame cap.
+        if (auto optional = session_.try_as<IGraphicsCaptureSession5>()) {
+            try { optional.MinUpdateInterval(winrt::Windows::Foundation::TimeSpan{0}); } catch (...) {}
+        }
+        frameToken_ = framePool_.FrameArrived([state](auto const& sender, auto const&) { OnFrameArrived(state, sender); });
+        frameRegistered_ = true;
+        closedToken_ = item_.Closed([state](auto const&, auto const&) {
+            std::lock_guard lock(state->mutex);
+            if (state->running) state->Fail(L"Le moniteur capturé a été fermé ou déconnecté.");
+        });
+        closedRegistered_ = true;
+        { std::lock_guard lock(state->mutex); state->running = true; }
+        session_.StartCapture(); return true;
     } catch (const winrt::hresult_error& error) {
-        SetLastError(DescribeCaptureError(L"Initialisation de la capture impossible", error.code()));
-        Stop();
-        return false;
+        std::lock_guard lock(state->mutex); state->Fail(CaptureError(L"Démarrage de la capture impossible", error.code()));
     } catch (...) {
-        SetLastError(L"Initialisation de la capture impossible (erreur inconnue).");
-        Stop();
-        return false;
+        std::lock_guard lock(state->mutex); state->Fail(L"Démarrage de la capture impossible.");
     }
+    Stop(); return false;
 }
-
 void CaptureSession::Stop() {
-    running_.store(false, std::memory_order_release);
-    if (framePool_ && frameHandlerRegistered_) {
-        try {
-            framePool_.FrameArrived(frameArrivedToken_);
-        } catch (...) {
-        }
-        frameHandlerRegistered_ = false;
-        frameArrivedToken_ = {};
-    }
-    try {
-        if (session_) {
-            session_.Close();
-        }
-        if (framePool_) {
-            framePool_.Close();
-        }
-    } catch (...) {
-    }
-    session_ = nullptr;
-    framePool_ = nullptr;
-    item_ = nullptr;
-    winrtDevice_ = nullptr;
-    borderlessCaptureAvailable_ = false;
-    callbackErrorNotified_.store(false, std::memory_order_relaxed);
+    // Late callbacks only retain their own State, never this. Invalidate the device
+    // under their lock before revoking events, then close without holding the lock.
     {
-        std::unique_lock lock(callbackMutex_);
-        callbackCv_.wait(lock, [this] { return activeCallbacks_ == 0; });
+        std::lock_guard lock(state_->mutex);
+        state_->running = false; state_->graphics = nullptr;
+        state_->latest = {}; state_->slots = {}; state_->device = nullptr;
     }
-    {
-        std::lock_guard lock(frameMutex_);
-        latestTexture_.Reset();
-        latestSize_ = {};
-        latestSequence_ = 0;
-        consumedSequence_ = 0;
-    }
+    if (framePool_ && frameRegistered_) { try { framePool_.FrameArrived(frameToken_); } catch (...) {} }
+    if (item_ && closedRegistered_) { try { item_.Closed(closedToken_); } catch (...) {} }
+    frameRegistered_ = closedRegistered_ = false;
+    if (session_) { try { session_.Close(); } catch (...) {} }
+    if (framePool_) { try { framePool_.Close(); } catch (...) {} }
+    session_ = nullptr; framePool_ = nullptr; item_ = nullptr;
+    frameToken_ = {}; closedToken_ = {}; borderlessCaptureAvailable_ = false;
 }
-
-void CaptureSession::OnFrameArrived(
-    winrt::Windows::Graphics::Capture::Direct3D11CaptureFramePool const& sender,
-    winrt::Windows::Foundation::IInspectable const&) {
-    CallbackGuard callbackGuard(this);
-    if (!running_.load(std::memory_order_acquire)) {
-        return;
-    }
-
+void CaptureSession::OnFrameArrived(const std::shared_ptr<State>& state, Direct3D11CaptureFramePool const& sender) {
+    std::lock_guard stateLock(state->mutex);
+    if (!state->running) return;
     try {
-        auto frame = sender.TryGetNextFrame();
-        if (!frame) {
-            return;
+        FrameCloser lease{sender.TryGetNextFrame()};
+        if (!lease.frame) return;
+        const auto size = lease.frame.ContentSize();
+        if (size.Width <= 0 || size.Height <= 0) { ++state->dropped; return; }
+        if (size.Width != state->poolSize.Width || size.Height != state->poolSize.Height) {
+            lease.frame.Close(); lease.frame = nullptr;
+            sender.Recreate(state->device, DirectXPixelFormat::B8G8R8A8UIntNormalized, 3, size);
+            state->poolSize = size; ++state->dropped; return;
         }
-
-        const auto contentSize = frame.ContentSize();
-        auto source = frame.Surface().as<winrt::Windows::Graphics::DirectX::Direct3D11::IDirect3DSurface>();
-        Microsoft::WRL::ComPtr<ID3D11Texture2D> sourceTexture;
-        winrt::check_hresult(source.as<::IUnknown>()->QueryInterface(IID_PPV_ARGS(sourceTexture.GetAddressOf())));
-
-        std::lock_guard graphicsLock(graphics_.Mutex());
-        D3D11_TEXTURE2D_DESC sourceDescription{};
-        sourceTexture->GetDesc(&sourceDescription);
-
-        std::lock_guard frameLock(frameMutex_);
-        if (!running_.load(std::memory_order_acquire)) {
-            return;
+        // The WinRT surface wraps a texture; QI<ID3D11Texture2D> on the surface fails.
+        auto access = lease.frame.Surface().as<::Windows::Graphics::DirectX::Direct3D11::IDirect3DDxgiInterfaceAccess>();
+        Microsoft::WRL::ComPtr<ID3D11Texture2D> source;
+        winrt::check_hresult(access->GetInterface(IID_PPV_ARGS(source.GetAddressOf())));
+        D3D11_TEXTURE2D_DESC sourceDesc{}; source->GetDesc(&sourceDesc);
+        if (static_cast<UINT>(size.Width) > sourceDesc.Width || static_cast<UINT>(size.Height) > sourceDesc.Height)
+            winrt::throw_hresult(E_INVALIDARG);
+        if (state->latest.texture) ++state->dropped;
+        state->latest = {};
+        std::shared_ptr<TextureSlot> slot;
+        for (auto& candidate : state->slots) {
+            if (!candidate) candidate = std::make_shared<TextureSlot>();
+            if (candidate.use_count() == 1) { slot = candidate; break; }
         }
-        if (!latestTexture_ || latestSize_.cx != contentSize.Width || latestSize_.cy != contentSize.Height) {
-            D3D11_TEXTURE2D_DESC destinationDescription = sourceDescription;
-            destinationDescription.BindFlags = D3D11_BIND_SHADER_RESOURCE;
-            destinationDescription.Usage = D3D11_USAGE_DEFAULT;
-            destinationDescription.CPUAccessFlags = 0;
-            destinationDescription.MiscFlags = 0;
-            Microsoft::WRL::ComPtr<ID3D11Texture2D> destination;
-            winrt::check_hresult(graphics_.Device()->CreateTexture2D(
-                &destinationDescription,
-                nullptr,
-                destination.GetAddressOf()));
-            latestTexture_ = std::move(destination);
-            latestSize_ = SIZE{contentSize.Width, contentSize.Height};
+        if (!slot) { ++state->dropped; return; }
+        auto& graphics = *state->graphics;
+        std::lock_guard graphicsLock(graphics.Mutex());
+        if (!slot->texture || slot->size.cx != size.Width || slot->size.cy != size.Height) {
+            D3D11_TEXTURE2D_DESC desc{};
+            desc.Width = size.Width; desc.Height = size.Height; desc.MipLevels = 1; desc.ArraySize = 1;
+            desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM; desc.SampleDesc.Count = 1;
+            desc.Usage = D3D11_USAGE_DEFAULT; desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+            winrt::check_hresult(graphics.Device()->CreateTexture2D(&desc, nullptr, slot->texture.ReleaseAndGetAddressOf()));
+            slot->size = SIZE{size.Width, size.Height};
         }
-
-        if (latestSequence_ != consumedSequence_) {
-            droppedFrames_.fetch_add(1, std::memory_order_relaxed);
-        }
-        graphics_.ImmediateContext()->CopyResource(latestTexture_.Get(), sourceTexture.Get());
-        latestSequence_++;
-        capturedFrames_.fetch_add(1, std::memory_order_relaxed);
-        callbackErrorNotified_.store(false, std::memory_order_relaxed);
-        if (frameEvent_ != nullptr) {
-            SetEvent(frameEvent_);
-        }
+        D3D11_BOX box{0, 0, 0, static_cast<UINT>(size.Width), static_cast<UINT>(size.Height), 1};
+        graphics.ImmediateContext()->CopySubresourceRegion(slot->texture.Get(), 0, 0, 0, 0, source.Get(), 0, &box);
+        winrt::check_hresult(graphics.Device()->GetDeviceRemovedReason());
+        state->latest.texture = slot->texture; state->latest.lease = slot; state->latest.size = slot->size;
+        state->latest.sequence = ++state->captured;
+        state->latest.systemTime = lease.frame.SystemRelativeTime().count();
+        SetEvent(state->event);
     } catch (const winrt::hresult_error& error) {
-        SetLastError(DescribeCaptureError(L"FrameArrived — copie GPU impossible", error.code()));
-        droppedFrames_.fetch_add(1, std::memory_order_relaxed);
-        if (!callbackErrorNotified_.exchange(true, std::memory_order_relaxed) && frameEvent_ != nullptr) {
-            SetEvent(frameEvent_);
-        }
+        ++state->dropped; state->Fail(CaptureError(L"Lecture de l’image capturée impossible", error.code()));
     } catch (...) {
-        SetLastError(L"Capture/FrameArrived: erreur inconnue pendant la copie GPU.");
-        droppedFrames_.fetch_add(1, std::memory_order_relaxed);
-        if (!callbackErrorNotified_.exchange(true, std::memory_order_relaxed) && frameEvent_ != nullptr) {
-            SetEvent(frameEvent_);
-        }
+        ++state->dropped; state->Fail(L"Lecture de l’image capturée impossible.");
     }
 }
-
 bool CaptureSession::TryAcquireLatest(CapturedFrame& frame) {
-    std::lock_guard lock(frameMutex_);
-    if (!latestTexture_ || latestSequence_ == consumedSequence_) {
-        return false;
-    }
-    frame.texture = latestTexture_;
-    frame.size = latestSize_;
-    frame.sequence = latestSequence_;
-    frame.systemTime = 0;
-    consumedSequence_ = latestSequence_;
-    return true;
+    std::lock_guard lock(state_->mutex);
+    if (!state_->running || !state_->latest.texture) return false;
+    frame = std::move(state_->latest); state_->latest = {}; return true;
 }
-
-} // namespace screenfx::graphics
+}

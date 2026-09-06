@@ -5,6 +5,7 @@
 #include <filesystem>
 #include <fstream>
 #include <vector>
+#include <cmath>
 
 namespace screenfx::graphics {
 namespace {
@@ -15,7 +16,7 @@ bool ReadBinaryFile(const std::wstring& path, std::vector<std::byte>& output) {
         return false;
     }
     const auto end = file.tellg();
-    if (end <= 0) {
+    if (end <= 0 || end > 16 * 1024 * 1024) {
         return false;
     }
     output.resize(static_cast<std::size_t>(end));
@@ -25,6 +26,7 @@ bool ReadBinaryFile(const std::wstring& path, std::vector<std::byte>& output) {
 }
 
 float Clamp(float value, float lower, float upper) {
+    if (!std::isfinite(value)) return lower;
     return value < lower ? lower : (value > upper ? upper : value);
 }
 
@@ -32,21 +34,21 @@ float Clamp(float value, float lower, float upper) {
 
 RenderEngine::RenderEngine(D3D11Context& graphics) : graphics_(graphics) {
     QueryPerformanceCounter(&startTime_);
+    QueryPerformanceFrequency(&frequency_);
 }
 
 std::wstring RenderEngine::ShaderPath(const wchar_t* fileName) {
-    wchar_t modulePath[MAX_PATH]{};
-    const DWORD length = GetModuleFileNameW(nullptr, modulePath, MAX_PATH);
-    if (length == 0 || length >= MAX_PATH) {
-        return std::wstring(L"shaders\\") + fileName;
-    }
-    std::filesystem::path path(modulePath, modulePath + length);
+    std::vector<wchar_t> modulePath(32768);
+    const DWORD length = GetModuleFileNameW(nullptr, modulePath.data(), static_cast<DWORD>(modulePath.size()));
+    if (length == 0 || length >= modulePath.size()) return {};
+    std::filesystem::path path(modulePath.data(), modulePath.data() + length);
     return (path.parent_path() / L"shaders" / fileName).wstring();
 }
 
 bool RenderEngine::CreateSwapChain(const RECT& bounds) {
-    if (graphics_.Factory() == nullptr || graphics_.Device() == nullptr || outputWindow_ == nullptr) {
-        return false;
+    if (graphics_.Factory() == nullptr || graphics_.Device() == nullptr || outputWindow_ == nullptr ||
+        bounds.right <= bounds.left || bounds.bottom <= bounds.top) {
+        return Check(E_INVALIDARG);
     }
     DXGI_SWAP_CHAIN_DESC1 description{};
     description.Width = static_cast<UINT>(bounds.right - bounds.left);
@@ -57,16 +59,23 @@ bool RenderEngine::CreateSwapChain(const RECT& bounds) {
     description.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
     description.BufferCount = 2;
     description.Scaling = DXGI_SCALING_STRETCH;
-    description.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
+    description.SwapEffect = DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL;
     description.AlphaMode = DXGI_ALPHA_MODE_IGNORE;
     description.Flags = graphics_.TearingSupported() ? DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING : 0;
 
     Microsoft::WRL::ComPtr<IDXGISwapChain1> swapChain;
-    if (FAILED(graphics_.Factory()->CreateSwapChainForHwnd(
-            graphics_.Device(), outputWindow_, &description, nullptr, nullptr, swapChain.GetAddressOf()))) {
+    if (!Check(graphics_.Factory()->CreateSwapChainForComposition(
+            graphics_.Device(), &description, nullptr, swapChain.GetAddressOf()))) {
         return false;
     }
-    graphics_.Factory()->MakeWindowAssociation(outputWindow_, DXGI_MWA_NO_ALT_ENTER | DXGI_MWA_NO_WINDOW_CHANGES);
+    Microsoft::WRL::ComPtr<IDXGIDevice> dxgiDevice;
+    if (!Check(graphics_.Device()->QueryInterface(IID_PPV_ARGS(dxgiDevice.GetAddressOf()))) ||
+        !Check(DCompositionCreateDevice(dxgiDevice.Get(), IID_PPV_ARGS(compositionDevice_.GetAddressOf()))) ||
+        !Check(compositionDevice_->CreateTargetForHwnd(outputWindow_, TRUE, compositionTarget_.GetAddressOf())) ||
+        !Check(compositionDevice_->CreateVisual(compositionVisual_.GetAddressOf())) ||
+        !Check(compositionVisual_->SetContent(swapChain.Get())) ||
+        !Check(compositionTarget_->SetRoot(compositionVisual_.Get())) ||
+        !Check(compositionDevice_->Commit())) return false;
     swapChain_ = std::move(swapChain);
     return CreateBackBuffer();
 }
@@ -74,13 +83,13 @@ bool RenderEngine::CreateSwapChain(const RECT& bounds) {
 bool RenderEngine::CreateBackBuffer() {
     renderTarget_.Reset();
     if (!swapChain_) {
-        return false;
+        return Check(E_UNEXPECTED);
     }
     Microsoft::WRL::ComPtr<ID3D11Texture2D> backBuffer;
-    if (FAILED(swapChain_->GetBuffer(0, IID_PPV_ARGS(backBuffer.GetAddressOf())))) {
+    if (!Check(swapChain_->GetBuffer(0, IID_PPV_ARGS(backBuffer.GetAddressOf())))) {
         return false;
     }
-    return SUCCEEDED(graphics_.Device()->CreateRenderTargetView(backBuffer.Get(), nullptr, renderTarget_.GetAddressOf()));
+    return Check(graphics_.Device()->CreateRenderTargetView(backBuffer.Get(), nullptr, renderTarget_.GetAddressOf()));
 }
 
 bool RenderEngine::CreateShaders() {
@@ -88,13 +97,13 @@ bool RenderEngine::CreateShaders() {
     std::vector<std::byte> pixelBytes;
     if (!ReadBinaryFile(ShaderPath(L"screenfx_vs.cso"), vertexBytes) ||
         !ReadBinaryFile(ShaderPath(L"screenfx_ps.cso"), pixelBytes)) {
-        return false;
+        return Check(HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND));
     }
-    if (FAILED(graphics_.Device()->CreateVertexShader(
+    if (!Check(graphics_.Device()->CreateVertexShader(
             vertexBytes.data(), vertexBytes.size(), nullptr, vertexShader_.GetAddressOf()))) {
         return false;
     }
-    if (FAILED(graphics_.Device()->CreatePixelShader(
+    if (!Check(graphics_.Device()->CreatePixelShader(
             pixelBytes.data(), pixelBytes.size(), nullptr, pixelShader_.GetAddressOf()))) {
         return false;
     }
@@ -104,7 +113,8 @@ bool RenderEngine::CreateShaders() {
     constantDescription.Usage = D3D11_USAGE_DYNAMIC;
     constantDescription.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
     constantDescription.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
-    if (FAILED(graphics_.Device()->CreateBuffer(&constantDescription, nullptr, constantBuffer_.GetAddressOf()))) {
+    static_assert(sizeof(ShaderConstants) % 16 == 0);
+    if (!Check(graphics_.Device()->CreateBuffer(&constantDescription, nullptr, constantBuffer_.GetAddressOf()))) {
         return false;
     }
 
@@ -114,7 +124,9 @@ bool RenderEngine::CreateShaders() {
     samplerDescription.AddressV = D3D11_TEXTURE_ADDRESS_CLAMP;
     samplerDescription.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
     samplerDescription.MaxLOD = D3D11_FLOAT32_MAX;
-    return SUCCEEDED(graphics_.Device()->CreateSamplerState(&samplerDescription, sampler_.GetAddressOf()));
+    samplerDescription.MaxAnisotropy = 1;
+    samplerDescription.ComparisonFunc = D3D11_COMPARISON_NEVER;
+    return Check(graphics_.Device()->CreateSamplerState(&samplerDescription, sampler_.GetAddressOf()));
 }
 
 bool RenderEngine::Initialize(HWND outputWindow, const RECT& bounds) {
@@ -128,6 +140,16 @@ bool RenderEngine::Initialize(HWND outputWindow, const RECT& bounds) {
 
 void RenderEngine::Shutdown() {
     std::lock_guard lock(graphics_.Mutex());
+    if (auto* context = graphics_.ImmediateContext()) {
+        context->ClearState();
+        context->Flush();
+    }
+    if (compositionTarget_) compositionTarget_->SetRoot(nullptr);
+    if (compositionVisual_) compositionVisual_->SetContent(nullptr);
+    if (compositionDevice_) compositionDevice_->Commit();
+    compositionTarget_.Reset();
+    compositionVisual_.Reset();
+    compositionDevice_.Reset();
     sourceView_.Reset();
     sourceTexture_.Reset();
     renderTarget_.Reset();
@@ -143,15 +165,15 @@ void RenderEngine::Shutdown() {
 }
 
 bool RenderEngine::Resize(const RECT& bounds) {
-    if (!swapChain_) {
-        bounds_ = bounds;
-        return false;
+    if (!swapChain_ || bounds.right <= bounds.left || bounds.bottom <= bounds.top) {
+        return Check(E_INVALIDARG);
     }
     std::lock_guard lock(graphics_.Mutex());
+    graphics_.ImmediateContext()->OMSetRenderTargets(0, nullptr, nullptr);
     renderTarget_.Reset();
     const UINT width = static_cast<UINT>(bounds.right - bounds.left);
     const UINT height = static_cast<UINT>(bounds.bottom - bounds.top);
-    if (FAILED(swapChain_->ResizeBuffers(2, width, height, DXGI_FORMAT_B8G8R8A8_UNORM,
+    if (!Check(swapChain_->ResizeBuffers(2, width, height, DXGI_FORMAT_B8G8R8A8_UNORM,
                                           graphics_.TearingSupported() ? DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING : 0))) {
         return false;
     }
@@ -160,49 +182,42 @@ bool RenderEngine::Resize(const RECT& bounds) {
 }
 
 bool RenderEngine::CreateSourceView(const CapturedFrame& frame) {
-    if (!frame.texture || frame.texture.Get() == sourceTexture_.Get()) {
-        return sourceView_ != nullptr;
-    }
+    if (!frame.texture) return Check(E_INVALIDARG);
+    if (frame.texture.Get() == sourceTexture_.Get() && sourceView_) return true;
     sourceView_.Reset();
     sourceTexture_ = frame.texture;
-    return SUCCEEDED(graphics_.Device()->CreateShaderResourceView(sourceTexture_.Get(), nullptr, sourceView_.GetAddressOf()));
+    return Check(graphics_.Device()->CreateShaderResourceView(sourceTexture_.Get(), nullptr, sourceView_.GetAddressOf()));
 }
 
-bool RenderEngine::Render(
+bool RenderEngine::DrawFrame(
     const CapturedFrame& frame,
-    const core::EffectSettings& effects,
-    core::FramePacingMode framePacing) {
-    if (!swapChain_ || !renderTarget_ || !vertexShader_ || !pixelShader_ || !frame.texture) {
-        ++droppedFrames_;
-        return false;
+    const core::EffectSettings& effects) {
+    if (!renderTarget_ || !vertexShader_ || !pixelShader_ || !frame.texture || frame.size.cx <= 0 || frame.size.cy <= 0) {
+        return Check(E_INVALIDARG);
     }
 
     std::lock_guard lock(graphics_.Mutex());
     if (!CreateSourceView(frame)) {
-        ++droppedFrames_;
         return false;
     }
 
     auto* context = graphics_.ImmediateContext();
     D3D11_MAPPED_SUBRESOURCE mapped{};
-    if (FAILED(context->Map(constantBuffer_.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped))) {
-        ++droppedFrames_;
+    if (!Check(context->Map(constantBuffer_.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped))) {
         return false;
     }
     auto* constants = static_cast<ShaderConstants*>(mapped.pData);
     LARGE_INTEGER now{};
     QueryPerformanceCounter(&now);
-    LARGE_INTEGER frequency{};
-    QueryPerformanceFrequency(&frequency);
-    const float elapsed = frequency.QuadPart == 0
+    const float elapsed = frequency_.QuadPart == 0
                               ? 0.0F
-                              : static_cast<float>(static_cast<double>(now.QuadPart - startTime_.QuadPart) / frequency.QuadPart);
+                              : static_cast<float>(static_cast<double>(now.QuadPart - startTime_.QuadPart) / frequency_.QuadPart);
     constants->screenWidth = static_cast<float>(frame.size.cx);
     constants->screenHeight = static_cast<float>(frame.size.cy);
     constants->time = elapsed;
     constants->frame = static_cast<float>(frameNumber_);
     constants->globalIntensity = Clamp(effects.globalIntensity, 0.0F, 1.0F);
-    constants->brightness = effects.brightness;
+    constants->brightness = Clamp(effects.brightness, -1.0F, 1.0F);
     constants->contrast = Clamp(effects.contrast, 0.0F, 4.0F);
     constants->saturation = Clamp(effects.saturation, 0.0F, 4.0F);
     constants->gamma = Clamp(effects.gamma, 0.1F, 4.0F);
@@ -240,17 +255,30 @@ bool RenderEngine::Render(
     context->PSSetShaderResources(0, 1, sourceView_.GetAddressOf());
     context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     context->Draw(3, 0);
+    ID3D11ShaderResourceView* noSource = nullptr;
+    context->PSSetShaderResources(0, 1, &noSource);
+    context->OMSetRenderTargets(0, nullptr, nullptr);
+    return Check(graphics_.Device()->GetDeviceRemovedReason());
+}
 
+bool RenderEngine::Render(const CapturedFrame& frame, const core::EffectSettings& effects,
+                          core::FramePacingMode framePacing) {
+    if (!swapChain_) {
+        ++droppedFrames_;
+        return Check(E_UNEXPECTED);
+    }
+    if (!DrawFrame(frame, effects)) {
+        ++droppedFrames_;
+        return false;
+    }
+    std::lock_guard lock(graphics_.Mutex());
     const UINT syncInterval = framePacing == core::FramePacingMode::VSync ? 1U : 0U;
     const UINT presentFlags = framePacing == core::FramePacingMode::Uncapped && graphics_.TearingSupported()
                                   ? DXGI_PRESENT_ALLOW_TEARING
                                   : 0U;
     const HRESULT presentResult = swapChain_->Present(syncInterval, presentFlags);
-    if (presentResult == DXGI_ERROR_DEVICE_REMOVED || presentResult == DXGI_ERROR_DEVICE_RESET) {
-        ++droppedFrames_;
-        return false;
-    }
-    if (FAILED(presentResult)) {
+    lastError_ = presentResult;
+    if (presentResult != S_OK) {
         ++droppedFrames_;
         return false;
     }

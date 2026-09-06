@@ -27,7 +27,10 @@ bool OverlayWindow::Create(HINSTANCE instance) {
         return false;
     }
 
-    constexpr DWORD extendedStyle = WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_TRANSPARENT;
+    // LAYERED + TRANSPARENT makes Windows pass mouse input through to windows
+    // in other processes. HTTRANSPARENT alone only traverses our own thread.
+    constexpr DWORD extendedStyle = WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE |
+                                    WS_EX_TRANSPARENT | WS_EX_LAYERED | WS_EX_NOREDIRECTIONBITMAP;
     window_ = CreateWindowExW(
         extendedStyle,
         kOverlayClass,
@@ -42,6 +45,10 @@ bool OverlayWindow::Create(HINSTANCE instance) {
         instance_,
         this);
     if (window_ == nullptr) {
+        return false;
+    }
+    if (!SetLayeredWindowAttributes(window_, 0, 255, LWA_ALPHA)) {
+        Destroy();
         return false;
     }
 
@@ -72,7 +79,7 @@ void OverlayWindow::SetBounds(const RECT& bounds) {
 }
 
 void OverlayWindow::Show() {
-    if (window_ != nullptr) {
+    if (window_ != nullptr && !IsVisible()) {
         ShowWindow(window_, SW_SHOWNOACTIVATE);
         SetWindowPos(window_, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
     }

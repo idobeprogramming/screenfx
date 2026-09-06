@@ -10,7 +10,9 @@ namespace screenfx::graphics {
 
 class D3D11Context {
 public:
-    bool Initialize();
+    bool Initialize(D3D_DRIVER_TYPE driver = D3D_DRIVER_TYPE_HARDWARE);
+    void Shutdown();
+    HRESULT LastError() const noexcept { return lastError_; }
 
     ID3D11Device* Device() const noexcept { return device_.Get(); }
     ID3D11DeviceContext* ImmediateContext() const noexcept { return context_.Get(); }
@@ -26,6 +28,7 @@ private:
     Microsoft::WRL::ComPtr<IDXGIFactory5> factory5_;
     bool tearingSupported_ = false;
     std::mutex mutex_;
+    HRESULT lastError_ = S_OK;
 };
 
 } // namespace screenfx::graphics

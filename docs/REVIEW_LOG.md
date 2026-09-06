@@ -1,6 +1,6 @@
 # Journal des revues
 
-Les lots sont validés après compilation, test de fumée et revue du diff.
+Les premiers lots ci-dessous décrivent leurs vérifications historiques. Le test de fumée ne vérifiait que l’énumération des moniteurs : il ne suffisait pas à valider la capture ou l’affichage. Les tests de pixels et de bureau ajoutés en P27 remplacent cette limite.
 
 ## P00 — initialiser le projet
 
@@ -29,4 +29,15 @@ Les lots sont validés après compilation, test de fumée et revue du diff.
 
 - Vérifications : compilation Debug et Release, test de fumée CTest dans les deux configurations.
 - Revue : l’overlay reste caché jusqu’au rendu d’une première frame valide ; les erreurs de `FrameArrived` sont conservées et affichées dans le panneau ; la destruction de l’overlay réinitialise son état d’exclusion.
-- Diagnostic observé : dans une session sans service Windows Graphics Capture disponible, `CreateForMonitor` renvoie `0x80070424` et aucune frame ne peut être rendue. Le bureau reste visible et le panneau explique la cause.
+- Diagnostic observé dans le compte isolé utilisé par les outils : `CreateForMonitor` renvoyait `0x80070424`. Ce résultat ne décrivait pas la session interactive de l’utilisateur et n’expliquait pas à lui seul son écran noir.
+
+## P27 — réparer et vérifier la capture, le rendu et les réglages
+
+- Cause de capture corrigée : extraire la texture par `IDirect3DDxgiInterfaceAccess::GetInterface`; une requête directe `ID3D11Texture2D` sur la surface WinRT échouait.
+- Durée de vie : les callbacks conservent un état de session indépendant; après l’arrêt ils ne touchent plus l’application ni le device. Quatre textures réutilisables sont protégées par un bail tant qu’une image est consommée. Chaque frame Windows est fermée, y compris en cas d’exception.
+- Présentation : swapchain DirectComposition `FLIP_SEQUENTIAL`, détachement des ressources avant redimensionnement/destruction, protection multithread D3D11 et propagation des erreurs GPU. La superposition utilise les styles Windows permettant aux clics de traverser les processus.
+- Shader : le seuil maximal du halo ne produit plus un `smoothstep` dégénéré. Les shaders sont recopiés même lorsqu’une modification ne relance pas l’édition de liens.
+- Réglages : validation JSON complète, types et versions vérifiés, nombres finis bornés, fichier limité à 64 Ko, fichiers invalides préservés et remplacement atomique par fichier temporaire unique.
+- Tests Debug réussis : CTest 3/3 (moniteurs, pixels WARP, réglages). Le test de pixels compare l’identité, les scanlines/masque, le contournement des effets et le halo maximal; la couche de validation D3D11 ne signale pas d’erreur dans ce test.
+- Tests interactifs réussis : `screenfx_graphics_tests --desktop` dans la session utilisateur. Trois cycles capture/arrêt, pixels du bureau non noirs, présentation sans plafond et VSync, redimensionnement, affichage réel d’une petite mire, traversée du hit-test et exclusion de la superposition vérifiée par les pixels verts du fond. Aucune image n’est sauvegardée par ce test.
+- Revue : lecture des fichiers et du diff, vérification des verrous et de l’ordre de destruction. Les travaux partiels des sous-agents ont été intégrés puis revérifiés localement; leur revue finale indépendante n’a pas abouti à cause de la limite de session.

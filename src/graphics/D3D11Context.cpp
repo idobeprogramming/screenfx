@@ -1,10 +1,25 @@
 #include "D3D11Context.h"
 
 #include <array>
+#include <d3d11_4.h>
 
 namespace screenfx::graphics {
 
-bool D3D11Context::Initialize() {
+void D3D11Context::Shutdown() {
+    std::lock_guard lock(mutex_);
+    if (context_) {
+        context_->ClearState();
+        context_->Flush();
+    }
+    factory5_.Reset();
+    factory_.Reset();
+    context_.Reset();
+    device_.Reset();
+    tearingSupported_ = false;
+}
+
+bool D3D11Context::Initialize(D3D_DRIVER_TYPE driver) {
+    Shutdown();
     UINT flags = D3D11_CREATE_DEVICE_BGRA_SUPPORT;
 #if defined(_DEBUG)
     flags |= D3D11_CREATE_DEVICE_DEBUG;
@@ -20,7 +35,7 @@ bool D3D11Context::Initialize() {
     D3D_FEATURE_LEVEL selectedLevel{};
     HRESULT result = D3D11CreateDevice(
         nullptr,
-        D3D_DRIVER_TYPE_HARDWARE,
+        driver,
         nullptr,
         flags,
         featureLevels.data(),
@@ -29,12 +44,29 @@ bool D3D11Context::Initialize() {
         device.GetAddressOf(),
         &selectedLevel,
         context.GetAddressOf());
+    if (result == DXGI_ERROR_SDK_COMPONENT_MISSING) {
+        flags &= ~D3D11_CREATE_DEVICE_DEBUG;
+        result = D3D11CreateDevice(nullptr, driver, nullptr, flags, featureLevels.data(),
+                                  static_cast<UINT>(featureLevels.size()), D3D11_SDK_VERSION,
+                                  device.ReleaseAndGetAddressOf(), &selectedLevel, context.ReleaseAndGetAddressOf());
+    }
+    lastError_ = result;
     if (FAILED(result)) {
         return false;
     }
 
+    Microsoft::WRL::ComPtr<ID3D11Multithread> multithread;
+    lastError_ = context.As(&multithread);
+    if (FAILED(lastError_)) return false;
+    multithread->SetMultithreadProtected(TRUE);
+
     Microsoft::WRL::ComPtr<IDXGIFactory2> factory;
-    result = CreateDXGIFactory2(0, IID_PPV_ARGS(factory.GetAddressOf()));
+    Microsoft::WRL::ComPtr<IDXGIDevice> dxgiDevice;
+    Microsoft::WRL::ComPtr<IDXGIAdapter> adapter;
+    result = device.As(&dxgiDevice);
+    if (SUCCEEDED(result)) result = dxgiDevice->GetAdapter(adapter.GetAddressOf());
+    if (SUCCEEDED(result)) result = adapter->GetParent(IID_PPV_ARGS(factory.GetAddressOf()));
+    lastError_ = result;
     if (FAILED(result)) {
         return false;
     }

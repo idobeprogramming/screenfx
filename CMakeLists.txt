@@ -51,6 +51,7 @@ target_link_libraries(screenfx PRIVATE
     comctl32
     d3d11
     dxgi
+    dcomp
     d3dcompiler
     windowsapp
 )
@@ -84,11 +85,13 @@ add_custom_command(
 )
 add_custom_target(screenfx_shaders DEPENDS "${SCREENFX_VERTEX_SHADER}" "${SCREENFX_PIXEL_SHADER}")
 add_dependencies(screenfx screenfx_shaders)
-add_custom_command(TARGET screenfx POST_BUILD
+add_custom_target(screenfx_shader_assets ALL
     COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:screenfx>/shaders"
     COMMAND ${CMAKE_COMMAND} -E copy_if_different "${SCREENFX_VERTEX_SHADER}" "$<TARGET_FILE_DIR:screenfx>/shaders/screenfx_vs.cso"
     COMMAND ${CMAKE_COMMAND} -E copy_if_different "${SCREENFX_PIXEL_SHADER}" "$<TARGET_FILE_DIR:screenfx>/shaders/screenfx_ps.cso"
+    DEPENDS screenfx_shaders
 )
+add_dependencies(screenfx screenfx_shader_assets)
 
 set_target_properties(screenfx PROPERTIES
     OUTPUT_NAME "ScreenFX"
@@ -105,4 +108,25 @@ if(SCREENFX_BUILD_TESTS)
     enable_testing()
     add_test(NAME screenfx_smoke COMMAND screenfx --self-test)
     set_tests_properties(screenfx_smoke PROPERTIES WORKING_DIRECTORY "$<TARGET_FILE_DIR:screenfx>")
+    add_executable(screenfx_graphics_tests
+        tests/GraphicsTests.cpp
+        src/graphics/D3D11Context.cpp
+        src/graphics/RenderEngine.cpp
+        src/graphics/CaptureSession.cpp
+        src/graphics/OverlayWindow.cpp
+        src/platform/Monitors.cpp)
+    target_include_directories(screenfx_graphics_tests PRIVATE src)
+    target_compile_definitions(screenfx_graphics_tests PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
+    target_compile_options(screenfx_graphics_tests PRIVATE /W4 /permissive- /EHsc /utf-8)
+    target_link_libraries(screenfx_graphics_tests PRIVATE user32 d3d11 dxgi dcomp d3dcompiler windowsapp)
+    add_dependencies(screenfx_graphics_tests screenfx_shader_assets)
+    add_test(NAME screenfx_graphics COMMAND screenfx_graphics_tests)
+    set_tests_properties(screenfx_graphics PROPERTIES TIMEOUT 30)
+    add_executable(screenfx_settings_tests tests/SettingsStoreTests.cpp src/core/SettingsStore.cpp)
+    target_include_directories(screenfx_settings_tests PRIVATE src)
+    target_compile_definitions(screenfx_settings_tests PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
+    target_compile_options(screenfx_settings_tests PRIVATE /W4 /permissive- /EHsc /utf-8)
+    target_link_libraries(screenfx_settings_tests PRIVATE shell32 ole32)
+    add_test(NAME screenfx_settings COMMAND screenfx_settings_tests)
+    set_tests_properties(screenfx_settings PROPERTIES TIMEOUT 15)
 endif()

@@ -1,87 +1,48 @@
 #pragma once
-
 #include "D3D11Context.h"
-
 #include <windows.graphics.capture.interop.h>
 #include <winrt/Windows.Foundation.h>
 #include <winrt/Windows.Graphics.Capture.h>
 #include <winrt/Windows.Graphics.DirectX.Direct3D11.h>
-
-#include <windows.h>
-#include <wrl/client.h>
-
-#include <atomic>
-#include <condition_variable>
-#include <cstdint>
-#include <mutex>
+#include <memory>
 #include <string>
+#include <cstdint>
 
 namespace screenfx::graphics {
-
 struct CapturedFrame {
     Microsoft::WRL::ComPtr<ID3D11Texture2D> texture;
     SIZE size{};
     std::uint64_t sequence = 0;
     std::int64_t systemTime = 0;
+    // Prevents recycling this texture until every consumer releases the frame.
+    std::shared_ptr<void> lease;
 };
-
 class CaptureSession {
 public:
     explicit CaptureSession(D3D11Context& graphics);
     ~CaptureSession();
-
     CaptureSession(const CaptureSession&) = delete;
     CaptureSession& operator=(const CaptureSession&) = delete;
-
     bool Start(HMONITOR monitor, SIZE size, bool uncapped);
     void Stop();
-    bool Running() const noexcept { return running_.load(std::memory_order_acquire); }
-
+    bool Running() const;
     bool TryAcquireLatest(CapturedFrame& frame);
-    HANDLE FrameEvent() const noexcept { return frameEvent_; }
-    std::uint64_t CapturedFrames() const noexcept { return capturedFrames_.load(std::memory_order_relaxed); }
-    std::uint64_t DroppedFrames() const noexcept { return droppedFrames_.load(std::memory_order_relaxed); }
+    HANDLE FrameEvent() const noexcept;
+    std::uint64_t CapturedFrames() const;
+    std::uint64_t DroppedFrames() const;
     bool BorderlessCaptureAvailable() const noexcept { return borderlessCaptureAvailable_; }
     std::wstring LastError() const;
-
 private:
-    struct CallbackGuard {
-        CaptureSession* owner = nullptr;
-        explicit CallbackGuard(CaptureSession* value);
-        ~CallbackGuard();
-    };
-
-    void OnFrameArrived(
-        winrt::Windows::Graphics::Capture::Direct3D11CaptureFramePool const& sender,
-        winrt::Windows::Foundation::IInspectable const&);
-    bool CreateCaptureItem(HMONITOR monitor, winrt::Windows::Graphics::Capture::GraphicsCaptureItem& item);
-    bool SetCaptureRate(bool uncapped);
-
+    struct State;
+    static void OnFrameArrived(const std::shared_ptr<State>& state,
+        winrt::Windows::Graphics::Capture::Direct3D11CaptureFramePool const& sender);
     D3D11Context& graphics_;
+    std::shared_ptr<State> state_;
     winrt::Windows::Graphics::Capture::GraphicsCaptureItem item_{nullptr};
     winrt::Windows::Graphics::Capture::Direct3D11CaptureFramePool framePool_{nullptr};
     winrt::Windows::Graphics::Capture::GraphicsCaptureSession session_{nullptr};
-    winrt::event_token frameArrivedToken_{};
-    bool frameHandlerRegistered_ = false;
-    winrt::Windows::Graphics::DirectX::Direct3D11::IDirect3DDevice winrtDevice_{nullptr};
-    Microsoft::WRL::ComPtr<ID3D11Texture2D> latestTexture_;
-    SIZE latestSize_{};
-    std::uint64_t latestSequence_ = 0;
-    std::uint64_t consumedSequence_ = 0;
-    std::mutex frameMutex_;
-    std::mutex callbackMutex_;
-    std::condition_variable callbackCv_;
-    std::uint32_t activeCallbacks_ = 0;
-    HANDLE frameEvent_ = nullptr;
-    std::atomic<bool> running_{false};
-    std::atomic<std::uint64_t> capturedFrames_{0};
-    std::atomic<std::uint64_t> droppedFrames_{0};
-    std::atomic<bool> callbackErrorNotified_{false};
+    winrt::event_token frameToken_{}, closedToken_{};
+    bool frameRegistered_ = false, closedRegistered_ = false;
     bool borderlessCaptureAvailable_ = false;
-    mutable std::mutex errorMutex_;
-    std::wstring lastError_;
-
-    void SetLastError(std::wstring message);
 };
-
-} // namespace screenfx::graphics
+}

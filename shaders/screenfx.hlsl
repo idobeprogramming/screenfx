@@ -91,7 +91,7 @@ float3 ApplyBloom(float2 uv, float3 color)
     blurred += SampleRgb(uv - float2(0.0, texel.y));
     blurred *= 0.25;
     float brightnessValue = max(color.r, max(color.g, color.b));
-    float mask = smoothstep(bloomThreshold, 1.0, brightnessValue);
+    float mask = bloomThreshold >= 1.0 ? 0.0 : smoothstep(bloomThreshold, 1.0, brightnessValue);
     return color + blurred * mask * bloomIntensity;
 }
 
