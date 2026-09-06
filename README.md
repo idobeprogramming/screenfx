@@ -51,6 +51,10 @@ ctest --preset windows-debug --output-on-failure
 
 The settings panel does not download any external dependencies.
 
+The renderer reuses capture texture views and skips expensive shader work for disabled effects. Panel counters refresh up to four times per second; effect controls and error messages remain immediate. **Uncapped** keeps the existing presentation mode without an added FPS limit.
+
+For reproducible GPU measurements, run `.\build\release\screenfx_performance_tests.exe --benchmark` after building Release. See [performance results and methodology](docs/PERFORMANCE.md) for the tested gains and tradeoffs.
+
 To produce an installation folder:
 
 ```powershell

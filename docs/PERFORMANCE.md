@@ -23,6 +23,14 @@ These numbers measure the offscreen GPU render pass. They exclude desktop captur
 - Automated verification compares 95 combinations against the previous shader, including neutral effects, bypass/blend boundaries, bloom threshold one, negative colors, animated grain and deterministic randomized settings. Both paths use the exact same constant buffer, including animation time. Tests permit one 8-bit channel step for rounding; the final hardware run observed zero difference.
 - The texture-pool test checks view identity and every output pixel during 100 rotations, plus eviction and shutdown cleanup. Existing graphics tests check identity, tint, CRT, invalid frames and D3D11 validation. The interactive desktop test checks real capture, visible composition, resize, capture exclusion, click-through hit testing and three capture restarts.
 
+## Settings panel
+
+Frame-counter labels refresh at most once every 250 ms while the panel is visible. Status/error messages and capture-exclusion changes update immediately. The panel skips updates while hidden or minimized, and refreshes when shown again. This rate applies only to counter labels; it does not pace captured frames or slider responses.
+
+Monitor labels are rebuilt only when their displayed metadata changes. Sliders, selection controls and the tint label/swatch are updated only when needed. The control snapshot tracks user edits as well as programmatic changes, so resetting or rejecting a change before the next render restores the correct value.
+
+Tests count actual Win32 control messages: 249 counter changes inside the interval produce no additional counter writes, while errors and exclusion changes still update immediately. They also cover selective writes, unchanged controls, monitor resolution changes, immediate control rollback, and hidden/minimized restoration. This confirms reduced UI work; no whole-application CPU percentage was measured.
+
 ## Reproduce
 
 Build from the project folder with `./build.ps1`. Ordinary CTest runs include the image-equivalence/cache test using WARP; they do not assert timing thresholds.

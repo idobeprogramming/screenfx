@@ -95,6 +95,7 @@ private:
         float minimum = 0.0F;
         float maximum = 1.0F;
         const wchar_t* label = nullptr;
+        int position = -1;
     };
 
     bool CreateControls();
@@ -102,14 +103,15 @@ private:
     HWND CreateLabel(const wchar_t* text, int x, int y, int width, int height);
     HWND CreateSlider(int id, const wchar_t* label, float minimum, float maximum);
     void LayoutControls(int width, int height);
-    void SyncControls(const core::AppSettings& settings, const std::vector<platform::MonitorInfo>& monitors);
+    void SyncControls(const core::AppSettings& settings, const std::vector<platform::MonitorInfo>& monitors, bool monitorsChanged);
     void UpdateStats(
         bool captureExcluded,
         std::uint64_t capturedFrames,
         std::uint64_t droppedFrames,
         std::uint64_t presentedFrames,
-        std::wstring_view status);
-    float ReadSlider(int id) const;
+        std::wstring_view status,
+        ULONGLONG now);
+    friend struct SettingsPanelTestAccess;
     HWND FindControl(int id) const;
     static int ToTrackbar(float value, float minimum, float maximum);
     static float FromTrackbar(int position, float minimum, float maximum);
@@ -148,7 +150,7 @@ private:
     core::AppSettings* settings_ = nullptr;
     core::AppSettings syncedSettings_{};
     PanelActions pendingActions_{};
-    std::vector<std::wstring> monitorLabels_;
+    std::vector<platform::MonitorInfo> syncedMonitors_;
     HFONT font_ = nullptr;
     UINT dpi_ = 96;
     int scrollX_ = 0;
@@ -157,11 +159,13 @@ private:
     std::uint64_t lastDroppedFrames_ = 0;
     std::uint64_t lastPresentedFrames_ = 0;
     std::wstring lastStatus_;
+    ULONGLONG lastStatsUpdate_ = 0;
     bool statsInitialized_ = false;
     bool lastCaptureExcluded_ = false;
     bool hasSyncedSettings_ = false;
     bool initialized_ = false;
     bool syncing_ = false;
+    bool wasVisible_ = false;
 };
 
 } // namespace screenfx::ui

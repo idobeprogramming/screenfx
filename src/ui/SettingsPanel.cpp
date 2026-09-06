@@ -16,6 +16,7 @@ constexpr int kColumnGap = 24;
 constexpr int kHeaderHeight = 24;
 constexpr int kRowHeight = 38;
 constexpr int kControlHeight = 24;
+constexpr ULONGLONG kStatsIntervalMs = 250;
 
 void SetPosition(HWND control, int x, int y, int width, int height) {
     if (control != nullptr) {
@@ -28,6 +29,15 @@ std::wstring MonitorLabel(const platform::MonitorInfo& monitor) {
            std::to_wstring(monitor.bounds.right - monitor.bounds.left) + L" × " +
            std::to_wstring(monitor.bounds.bottom - monitor.bounds.top) +
            (monitor.primary ? L"  (primary)" : L"");
+}
+
+bool MonitorLabelsEqual(const std::vector<platform::MonitorInfo>& left, const std::vector<platform::MonitorInfo>& right) {
+    return left.size() == right.size() && std::equal(left.begin(), left.end(), right.begin(),
+        [](const platform::MonitorInfo& a, const platform::MonitorInfo& b) {
+            return a.deviceName == b.deviceName && a.primary == b.primary &&
+                   a.bounds.right - a.bounds.left == b.bounds.right - b.bounds.left &&
+                   a.bounds.bottom - a.bounds.top == b.bounds.bottom - b.bounds.top;
+        });
 }
 
 bool EffectsEqual(const core::EffectSettings& left, const core::EffectSettings& right) {
@@ -354,7 +364,7 @@ void SettingsPanel::Shutdown() {
     syncedSettings_ = {};
     sliders_.clear();
     pendingActions_ = {};
-    monitorLabels_.clear();
+    syncedMonitors_.clear();
     if (font_ != nullptr) DeleteObject(font_);
     font_ = nullptr;
     scrollX_ = 0;
@@ -363,8 +373,10 @@ void SettingsPanel::Shutdown() {
     lastDroppedFrames_ = 0;
     lastPresentedFrames_ = 0;
     lastStatus_.clear();
+    lastStatsUpdate_ = 0;
     statsInitialized_ = false;
     hasSyncedSettings_ = false;
+    wasVisible_ = false;
     window_ = nullptr;
     enabled_ = nullptr;
     stop_ = nullptr;
@@ -435,39 +447,26 @@ float SettingsPanel::FromTrackbar(int position, float minimum, float maximum) {
     return minimum + normalized * (maximum - minimum);
 }
 
-float SettingsPanel::ReadSlider(int id) const {
-    for (const SliderBinding& binding : sliders_) {
-        if (binding.id == id && binding.control != nullptr) {
-            const int position = static_cast<int>(SendMessageW(binding.control, TBM_GETPOS, 0, 0));
-            return FromTrackbar(position, binding.minimum, binding.maximum);
-        }
-    }
-    return 0.0F;
-}
-
-void SettingsPanel::SyncControls(const core::AppSettings& settings, const std::vector<platform::MonitorInfo>& monitors) {
+void SettingsPanel::SyncControls(const core::AppSettings& settings, const std::vector<platform::MonitorInfo>& monitors, bool monitorsChanged) {
     if (syncing_) {
         return;
     }
     syncing_ = true;
-    if (enabled_ != nullptr) {
+    if (enabled_ != nullptr && (!hasSyncedSettings_ || settings.enabled != syncedSettings_.enabled)) {
         SendMessageW(enabled_, BM_SETCHECK, settings.enabled ? BST_CHECKED : BST_UNCHECKED, 0);
     }
-    if (pacingCombo_ != nullptr) {
+    if (pacingCombo_ != nullptr && (!hasSyncedSettings_ || settings.framePacing != syncedSettings_.framePacing)) {
         SendMessageW(pacingCombo_, CB_SETCURSEL, settings.framePacing == core::FramePacingMode::VSync ? 1 : 0, 0);
     }
-    std::vector<std::wstring> labels;
-    labels.reserve(monitors.size());
-    for (const auto& monitor : monitors) labels.push_back(MonitorLabel(monitor));
-    if (monitorCombo_ != nullptr && monitorLabels_ != labels) {
+    if (monitorCombo_ != nullptr && monitorsChanged) {
         SendMessageW(monitorCombo_, CB_RESETCONTENT, 0, 0);
         for (const platform::MonitorInfo& monitor : monitors) {
             const std::wstring label = MonitorLabel(monitor);
             SendMessageW(monitorCombo_, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(label.c_str()));
         }
-        monitorLabels_ = std::move(labels);
+        syncedMonitors_ = monitors;
     }
-    if (monitorCombo_ != nullptr) {
+    if (monitorCombo_ != nullptr && (monitorsChanged || !hasSyncedSettings_ || settings.monitorIndex != syncedSettings_.monitorIndex)) {
         if (monitors.empty()) {
             SendMessageW(monitorCombo_, CB_SETCURSEL, static_cast<WPARAM>(-1), 0);
         } else {
@@ -501,19 +500,26 @@ void SettingsPanel::SyncControls(const core::AppSettings& settings, const std::v
         std::pair{kTintIntensity, settings.effects.tintIntensity},
     };
     for (const auto& [id, value] : values) {
-        for (const SliderBinding& binding : sliders_) {
+        for (SliderBinding& binding : sliders_) {
             if (binding.id == id && binding.control != nullptr) {
-                SendMessageW(binding.control, TBM_SETPOS, TRUE, ToTrackbar(value, binding.minimum, binding.maximum));
+                const int position = ToTrackbar(value, binding.minimum, binding.maximum);
+                if (binding.position != position) {
+                    SendMessageW(binding.control, TBM_SETPOS, TRUE, position);
+                    binding.position = position;
+                }
                 break;
             }
         }
     }
     const auto channel = [](float value) { return static_cast<BYTE>(std::clamp(value, 0.0F, 1.0F) * 255.0F + 0.5F); };
-    tintColorValue_ = RGB(channel(settings.effects.tintRed), channel(settings.effects.tintGreen), channel(settings.effects.tintBlue));
-    wchar_t label[48]{};
-    swprintf_s(label, L"Tint color: #%02X%02X%02X", GetRValue(tintColorValue_), GetGValue(tintColorValue_), GetBValue(tintColorValue_));
-    SetWindowTextW(tintColor_, label);
-    InvalidateRect(tintSwatch_, nullptr, TRUE);
+    const COLORREF tint = RGB(channel(settings.effects.tintRed), channel(settings.effects.tintGreen), channel(settings.effects.tintBlue));
+    if (!hasSyncedSettings_ || tintColorValue_ != tint) {
+        tintColorValue_ = tint;
+        wchar_t label[48]{};
+        swprintf_s(label, L"Tint color: #%02X%02X%02X", GetRValue(tint), GetGValue(tint), GetBValue(tint));
+        SetWindowTextW(tintColor_, label);
+        InvalidateRect(tintSwatch_, nullptr, TRUE);
+    }
     syncing_ = false;
 }
 
@@ -522,32 +528,35 @@ void SettingsPanel::UpdateStats(
     std::uint64_t capturedFrames,
     std::uint64_t droppedFrames,
     std::uint64_t presentedFrames,
-    std::wstring_view status) {
-    if (statsInitialized_ && capturedFrames == lastCapturedFrames_ && droppedFrames == lastDroppedFrames_ &&
-        presentedFrames == lastPresentedFrames_ && status == lastStatus_ && captureExcluded == lastCaptureExcluded_) {
+    std::wstring_view status,
+    ULONGLONG now) {
+    // Errors and capture state must remain immediate even between counter refreshes.
+    if ((!statsInitialized_ || status != lastStatus_) && status_ != nullptr) {
+        lastStatus_ = status;
+        SetWindowTextW(status_, lastStatus_.c_str());
+    }
+    if ((!statsInitialized_ || captureExcluded != lastCaptureExcluded_) && captureState_ != nullptr) {
+        lastCaptureExcluded_ = captureExcluded;
+        SetWindowTextW(captureState_, captureExcluded ? L"Capture exclusion: active" : L"Capture exclusion: unavailable");
+    }
+    if (statsInitialized_ && (now - lastStatsUpdate_ < kStatsIntervalMs ||
+        (capturedFrames == lastCapturedFrames_ && droppedFrames == lastDroppedFrames_ && presentedFrames == lastPresentedFrames_))) {
         return;
     }
-    statsInitialized_ = true;
+    if ((!statsInitialized_ || capturedFrames != lastCapturedFrames_) && capturedStats_ != nullptr) {
+        SetWindowTextW(capturedStats_, (L"Captured frames: " + std::to_wstring(capturedFrames)).c_str());
+    }
+    if ((!statsInitialized_ || presentedFrames != lastPresentedFrames_) && presentedStats_ != nullptr) {
+        SetWindowTextW(presentedStats_, (L"Presented frames: " + std::to_wstring(presentedFrames)).c_str());
+    }
+    if ((!statsInitialized_ || droppedFrames != lastDroppedFrames_) && droppedStats_ != nullptr) {
+        SetWindowTextW(droppedStats_, (L"Dropped frames: " + std::to_wstring(droppedFrames)).c_str());
+    }
     lastCapturedFrames_ = capturedFrames;
     lastDroppedFrames_ = droppedFrames;
     lastPresentedFrames_ = presentedFrames;
-    lastStatus_ = status;
-    lastCaptureExcluded_ = captureExcluded;
-    if (status_ != nullptr) {
-        SetWindowTextW(status_, std::wstring(status).c_str());
-    }
-    if (capturedStats_ != nullptr) {
-        SetWindowTextW(capturedStats_, (L"Captured frames: " + std::to_wstring(capturedFrames)).c_str());
-    }
-    if (presentedStats_ != nullptr) {
-        SetWindowTextW(presentedStats_, (L"Presented frames: " + std::to_wstring(presentedFrames)).c_str());
-    }
-    if (droppedStats_ != nullptr) {
-        SetWindowTextW(droppedStats_, (L"Dropped frames: " + std::to_wstring(droppedFrames)).c_str());
-    }
-    if (captureState_ != nullptr) {
-        SetWindowTextW(captureState_, captureExcluded ? L"Capture exclusion: active" : L"Capture exclusion: unavailable");
-    }
+    lastStatsUpdate_ = now;
+    statsInitialized_ = true;
 }
 
 void SettingsPanel::LayoutControls(int width, int height) {
@@ -660,6 +669,9 @@ bool SettingsPanel::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
     if (!initialized_) {
         return false;
     }
+    if (message == WM_SHOWWINDOW && wParam == FALSE) {
+        wasVisible_ = false;
+    }
     if (message == WM_DRAWITEM && wParam == kTintSwatch) {
         const auto* draw = reinterpret_cast<const DRAWITEMSTRUCT*>(lParam);
         if (draw != nullptr) {
@@ -697,6 +709,7 @@ bool SettingsPanel::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
         return true;
     }
     if (message == WM_SIZE) {
+        if (wParam == SIZE_MINIMIZED) wasVisible_ = false;
         if (wParam != SIZE_MINIMIZED) {
             LayoutControls(static_cast<int>(LOWORD(lParam)), static_cast<int>(HIWORD(lParam)));
         }
@@ -728,6 +741,7 @@ bool SettingsPanel::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
             if (code == BN_CLICKED) {
                 pendingActions_.toggleRequested = true;
                 pendingActions_.desiredEnabled = SendMessageW(enabled_, BM_GETCHECK, 0, 0) == BST_CHECKED;
+                syncedSettings_.enabled = pendingActions_.desiredEnabled;
                 return true;
             }
             break;
@@ -742,6 +756,7 @@ bool SettingsPanel::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
                 const LRESULT selected = SendMessageW(monitorCombo_, CB_GETCURSEL, 0, 0);
                 if (selected >= 0) {
                     settings_->monitorIndex = static_cast<std::uint32_t>(selected);
+                    syncedSettings_.monitorIndex = settings_->monitorIndex;
                     pendingActions_.monitorChanged = true;
                     pendingActions_.settingsChanged = true;
                 }
@@ -752,6 +767,7 @@ bool SettingsPanel::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
             if (code == CBN_SELCHANGE && settings_ != nullptr) {
                 const LRESULT selected = SendMessageW(pacingCombo_, CB_GETCURSEL, 0, 0);
                 settings_->framePacing = selected == 1 ? core::FramePacingMode::VSync : core::FramePacingMode::Uncapped;
+                syncedSettings_.framePacing = settings_->framePacing;
                 pendingActions_.pacingChanged = true;
                 pendingActions_.settingsChanged = true;
                 return true;
@@ -777,37 +793,45 @@ bool SettingsPanel::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
     if (message == WM_HSCROLL && !syncing_ && settings_ != nullptr) {
         const HWND source = reinterpret_cast<HWND>(lParam);
         int id = 0;
-        for (const SliderBinding& binding : sliders_) {
+        float value = 0.0F;
+        for (SliderBinding& binding : sliders_) {
             if (binding.control == source) {
                 id = binding.id;
+                binding.position = static_cast<int>(SendMessageW(source, TBM_GETPOS, 0, 0));
+                value = FromTrackbar(binding.position, binding.minimum, binding.maximum);
                 break;
             }
         }
         if (id != 0) {
-            const float value = ReadSlider(id);
+            // The snapshot describes the controls, including edits that happen before
+            // the next Render. An immediate reset must compare against the new value.
+            const auto setValue = [&](float core::EffectSettings::* member) {
+                settings_->effects.*member = value;
+                syncedSettings_.effects.*member = value;
+            };
             switch (id) {
-            case kBrightness: settings_->effects.brightness = value; break;
-            case kContrast: settings_->effects.contrast = value; break;
-            case kSaturation: settings_->effects.saturation = value; break;
-            case kGamma: settings_->effects.gamma = value; break;
-            case kGrayscale: settings_->effects.grayscale = value; break;
-            case kSepia: settings_->effects.sepia = value; break;
-            case kScanline: settings_->effects.scanlineIntensity = value; break;
-            case kSpacing: settings_->effects.scanlineSpacing = value; break;
-            case kThickness: settings_->effects.scanlineThickness = value; break;
-            case kPhosphor: settings_->effects.phosphorIntensity = value; break;
-            case kPixelSize: settings_->effects.pixelSize = value; break;
-            case kSharpen: settings_->effects.sharpen = value; break;
-            case kChromatic: settings_->effects.chromaticAberration = value; break;
-            case kBloom: settings_->effects.bloomIntensity = value; break;
-            case kBloomThreshold: settings_->effects.bloomThreshold = value; break;
-            case kBloomRadius: settings_->effects.bloomRadius = value; break;
-            case kVignette: settings_->effects.vignetteIntensity = value; break;
-            case kVignetteWidth: settings_->effects.vignetteWidth = value; break;
-            case kGrain: settings_->effects.grainIntensity = value; break;
-            case kGrainSize: settings_->effects.grainSize = value; break;
-            case kGlobalIntensity: settings_->effects.globalIntensity = value; break;
-            case kTintIntensity: settings_->effects.tintIntensity = value; break;
+            case kBrightness: setValue(&core::EffectSettings::brightness); break;
+            case kContrast: setValue(&core::EffectSettings::contrast); break;
+            case kSaturation: setValue(&core::EffectSettings::saturation); break;
+            case kGamma: setValue(&core::EffectSettings::gamma); break;
+            case kGrayscale: setValue(&core::EffectSettings::grayscale); break;
+            case kSepia: setValue(&core::EffectSettings::sepia); break;
+            case kScanline: setValue(&core::EffectSettings::scanlineIntensity); break;
+            case kSpacing: setValue(&core::EffectSettings::scanlineSpacing); break;
+            case kThickness: setValue(&core::EffectSettings::scanlineThickness); break;
+            case kPhosphor: setValue(&core::EffectSettings::phosphorIntensity); break;
+            case kPixelSize: setValue(&core::EffectSettings::pixelSize); break;
+            case kSharpen: setValue(&core::EffectSettings::sharpen); break;
+            case kChromatic: setValue(&core::EffectSettings::chromaticAberration); break;
+            case kBloom: setValue(&core::EffectSettings::bloomIntensity); break;
+            case kBloomThreshold: setValue(&core::EffectSettings::bloomThreshold); break;
+            case kBloomRadius: setValue(&core::EffectSettings::bloomRadius); break;
+            case kVignette: setValue(&core::EffectSettings::vignetteIntensity); break;
+            case kVignetteWidth: setValue(&core::EffectSettings::vignetteWidth); break;
+            case kGrain: setValue(&core::EffectSettings::grainIntensity); break;
+            case kGrainSize: setValue(&core::EffectSettings::grainSize); break;
+            case kGlobalIntensity: setValue(&core::EffectSettings::globalIntensity); break;
+            case kTintIntensity: setValue(&core::EffectSettings::tintIntensity); break;
             default: break;
             }
             pendingActions_.settingsChanged = true;
@@ -831,19 +855,20 @@ void SettingsPanel::Render(
     std::uint64_t droppedFrames,
     std::uint64_t presentedFrames,
     std::wstring_view status) {
-    if (!initialized_ || window_ == nullptr || !IsWindowVisible(window_)) {
+    if (!initialized_ || window_ == nullptr || !IsWindowVisible(window_) || IsIconic(window_)) {
+        wasVisible_ = false;
         return;
     }
+    if (!wasVisible_) statsInitialized_ = false;
+    wasVisible_ = true;
     settings_ = &settings;
-    std::vector<std::wstring> labels;
-    labels.reserve(monitors.size());
-    for (const auto& monitor : monitors) labels.push_back(MonitorLabel(monitor));
-    if (!hasSyncedSettings_ || !SettingsEqual(settings, syncedSettings_) || monitorLabels_ != labels) {
-        SyncControls(settings, monitors);
+    const bool monitorsChanged = !MonitorLabelsEqual(monitors, syncedMonitors_);
+    if (!hasSyncedSettings_ || !SettingsEqual(settings, syncedSettings_) || monitorsChanged) {
+        SyncControls(settings, monitors, monitorsChanged);
         syncedSettings_ = settings;
         hasSyncedSettings_ = true;
     }
-    UpdateStats(captureExcluded, capturedFrames, droppedFrames, presentedFrames, status);
+    UpdateStats(captureExcluded, capturedFrames, droppedFrames, presentedFrames, status, GetTickCount64());
 }
 
 } // namespace screenfx::ui
