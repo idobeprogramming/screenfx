@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cwchar>
 
 namespace screenfx::platform {
 namespace {
@@ -11,6 +12,7 @@ namespace {
 constexpr wchar_t kWindowClass[] = L"ScreenFX.ControlWindow";
 constexpr wchar_t kWindowTitle[] = L"ScreenFX";
 constexpr wchar_t kPanelTitle[] = L"ScreenFX — réglages";
+constexpr ULONGLONG kFirstFrameTimeoutMs = 5000;
 
 int MakeControlId(int base) {
     return base;
@@ -22,12 +24,22 @@ void ShowStartupError(const wchar_t* operation, DWORD error) {
     MessageBoxW(nullptr, message.c_str(), L"ScreenFX", MB_ICONERROR | MB_OK);
 }
 
+std::wstring RenderError(HRESULT result) {
+    wchar_t code[32]{};
+    swprintf_s(code, L"0x%08lX", static_cast<unsigned long>(result));
+    return L"Rendu GPU interrompu (" + std::wstring(code) + L").";
+}
+
 } // namespace
 
 Win32App::Win32App(HINSTANCE instance, int showCommand)
-    : instance_(instance), settings_(core::SettingsStore::Load()), capture_(graphics_), renderer_(graphics_) {
-    if (CreateControlWindow(showCommand) && settings_.enabled) {
-        SetEnabled(true);
+    : instance_(instance), capture_(graphics_), renderer_(graphics_) {
+    const auto loaded = core::SettingsStore::LoadWithStatus(core::SettingsStore::Path());
+    settings_ = loaded.settings;
+    taskbarCreatedMessage_ = RegisterWindowMessageW(L"TaskbarCreated");
+    if (CreateControlWindow(showCommand)) {
+        if (settings_.enabled) SetEnabled(true);
+        if (!loaded.error.empty()) UpdateStatus(loaded.error);
     }
 }
 
@@ -64,15 +76,20 @@ bool Win32App::CreateControlWindow(int showCommand) {
         return false;
     }
 
+    const UINT dpi = GetDpiForSystem();
+    RECT workArea{};
+    SystemParametersInfoW(SPI_GETWORKAREA, 0, &workArea, 0);
+    const int initialWidth = std::min(MulDiv(980, dpi, 96), static_cast<int>(workArea.right - workArea.left));
+    const int initialHeight = std::min(MulDiv(820, dpi, 96), static_cast<int>(workArea.bottom - workArea.top));
     window_ = CreateWindowExW(
-        0,
+        WS_EX_CONTROLPARENT,
         kWindowClass,
         kPanelTitle,
-        WS_OVERLAPPEDWINDOW,
+        WS_OVERLAPPEDWINDOW | WS_HSCROLL | WS_VSCROLL | WS_CLIPCHILDREN,
         CW_USEDEFAULT,
         CW_USEDEFAULT,
-        980,
-        820,
+        std::max(400, initialWidth),
+        std::max(300, initialHeight),
         nullptr,
         nullptr,
         module,
@@ -112,32 +129,28 @@ bool Win32App::RegisterHotkeys() {
     }
 
     const UINT modifiers = MOD_CONTROL | MOD_ALT | MOD_NOREPEAT;
-    const bool toggle = RegisterHotKey(window_, kHotkeyToggle, modifiers, VK_F10) != FALSE;
-    const bool panel = RegisterHotKey(window_, kHotkeyPanel, modifiers, VK_F11) != FALSE;
-    const bool stop = RegisterHotKey(window_, kHotkeyStop, modifiers, VK_F12) != FALSE;
-    hotkeysRegistered_ = toggle && panel && stop;
-
-    if (!hotkeysRegistered_) {
-        if (toggle) UnregisterHotKey(window_, kHotkeyToggle);
-        if (panel) UnregisterHotKey(window_, kHotkeyPanel);
-        if (stop) UnregisterHotKey(window_, kHotkeyStop);
-        MessageBoxW(
-            window_,
-            L"Les raccourcis Ctrl+Alt+F10/F11/F12 ne sont pas tous disponibles.\n\nLe bouton d’arrêt du panneau reste utilisable.",
-            kWindowTitle,
-            MB_ICONWARNING | MB_OK);
+    for (UINT id = kHotkeyToggle; id <= kHotkeyStop; ++id) {
+        const UINT bit = 1u << id;
+        if ((registeredHotkeys_ & bit) == 0 && RegisterHotKey(window_, id, modifiers, VK_F10 + id - 1) != FALSE) {
+            registeredHotkeys_ |= bit;
+        }
     }
-    return hotkeysRegistered_;
+    if ((registeredHotkeys_ & (1u << kHotkeyStop)) == 0) {
+        UpdateStatus(L"Ctrl+Alt+F12 est déjà utilisé. Libérez ce raccourci d’arrêt avant d’activer le filtre.");
+    } else if (registeredHotkeys_ != 14u) {
+        UpdateStatus(L"Certains raccourcis sont déjà utilisés. Le panneau et Ctrl+Alt+F12 restent disponibles.");
+    }
+    return registeredHotkeys_ == 14u;
 }
 
 void Win32App::UnregisterHotkeys() {
-    if (window_ == nullptr || !hotkeysRegistered_) {
+    if (window_ == nullptr) {
         return;
     }
     UnregisterHotKey(window_, kHotkeyToggle);
     UnregisterHotKey(window_, kHotkeyPanel);
     UnregisterHotKey(window_, kHotkeyStop);
-    hotkeysRegistered_ = false;
+    registeredHotkeys_ = 0;
 }
 
 void Win32App::AddTrayIcon() {
@@ -151,7 +164,7 @@ void Win32App::AddTrayIcon() {
     trayIcon_.uCallbackMessage = kTrayMessage;
     trayIcon_.hIcon = LoadIconW(nullptr, IDI_APPLICATION);
     wcsncpy_s(trayIcon_.szTip, L"ScreenFX", _TRUNCATE);
-    Shell_NotifyIconW(NIM_ADD, &trayIcon_);
+    trayIconAdded_ = Shell_NotifyIconW(NIM_ADD, &trayIcon_) != FALSE;
 }
 
 void Win32App::RemoveTrayIcon() {
@@ -159,6 +172,7 @@ void Win32App::RemoveTrayIcon() {
         Shell_NotifyIconW(NIM_DELETE, &trayIcon_);
         trayIcon_ = {};
     }
+    trayIconAdded_ = false;
 }
 
 void Win32App::ShowPanel() {
@@ -166,13 +180,25 @@ void Win32App::ShowPanel() {
         return;
     }
     EnsurePanel();
-    ShowWindow(window_, SW_SHOW);
+    ShowWindow(window_, IsIconic(window_) ? SW_RESTORE : SW_SHOW);
+    KeepPanelAboveOverlay();
     SetForegroundWindow(window_);
 }
 
 void Win32App::HidePanel() {
     if (window_ != nullptr) {
+        if (!trayIconAdded_ && (registeredHotkeys_ & (1u << kHotkeyPanel)) == 0) {
+            UpdateStatus(L"Le panneau reste ouvert : l’icône et le raccourci pour le rouvrir sont indisponibles.");
+            return;
+        }
         ShowWindow(window_, SW_HIDE);
+    }
+}
+
+void Win32App::KeepPanelAboveOverlay() {
+    if (window_ != nullptr) {
+        SetWindowPos(window_, enabled_ ? HWND_TOPMOST : HWND_NOTOPMOST, 0, 0, 0, 0,
+                     SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
     }
 }
 
@@ -183,6 +209,14 @@ void Win32App::UpdateStatus(const std::wstring& text) {
     }
 }
 
+bool Win32App::SaveSettings(bool announce) {
+    std::wstring error;
+    const bool saved = core::SettingsStore::Save(settings_, core::SettingsStore::Path(), &error);
+    if (!saved) UpdateStatus(L"Réglages non enregistrés — " + error);
+    else if (announce) UpdateStatus(L"Réglages enregistrés.");
+    return saved;
+}
+
 void Win32App::OnToggleRequested() {
     SetEnabled(!enabled_);
 }
@@ -191,8 +225,8 @@ void Win32App::OnStopRequested() {
     SetEnabled(false);
     ShutdownGraphics();
     settings_.enabled = false;
-    core::SettingsStore::Save(settings_);
     UpdateStatus(L"Filtre arrêté.");
+    SaveSettings();
 }
 
 bool Win32App::InitializeGraphics() {
@@ -206,7 +240,7 @@ bool Win32App::InitializeGraphics() {
         UpdateStatus(L"Aucun moniteur actif n’a été détecté.");
         return false;
     }
-    if (graphics_.Device() == nullptr && !graphics_.Initialize()) {
+    if ((graphics_.Device() == nullptr || FAILED(graphics_.Device()->GetDeviceRemovedReason())) && !graphics_.Initialize()) {
         UpdateStatus(L"Direct3D 11 n’est pas disponible sur cette machine.");
         return false;
     }
@@ -215,11 +249,17 @@ bool Win32App::InitializeGraphics() {
         UpdateStatus(L"Impossible de créer la superposition.");
         return false;
     }
+    if (!overlay_.CaptureExcluded()) {
+        ShutdownGraphics();
+        UpdateStatus(L"Windows ne peut pas exclure la superposition de la capture. Le filtre reste arrêté pour éviter une boucle d’image.");
+        return false;
+    }
     const auto& monitor = monitors_[std::min<std::size_t>(settings_.monitorIndex, monitors_.size() - 1)];
     overlay_.SetBounds(monitor.bounds);
     if (!renderer_.Initialize(overlay_.Handle(), monitor.bounds)) {
+        const auto error = renderer_.LastError();
         ShutdownGraphics();
-        UpdateStatus(L"Impossible d’initialiser le rendu GPU ou les shaders.");
+        UpdateStatus(L"Impossible d’initialiser le rendu GPU ou les shaders. " + RenderError(error));
         return false;
     }
     if (!StartCaptureForSelectedMonitor()) {
@@ -249,8 +289,9 @@ bool Win32App::StartCaptureForSelectedMonitor() {
 }
 
 void Win32App::ShutdownGraphics() {
-    capture_.Stop();
+    // Restore the desktop before potentially blocking in capture shutdown.
     overlay_.Hide();
+    capture_.Stop();
     renderer_.Shutdown();
     overlay_.Destroy();
     graphicsInitialized_ = false;
@@ -258,29 +299,39 @@ void Win32App::ShutdownGraphics() {
     haveFrame_ = false;
     renderRequested_ = false;
     lastRenderedSequence_ = 0;
+    firstFrameDeadline_ = 0;
 }
 
 void Win32App::SetEnabled(bool enabled) {
     if (enabled == enabled_) {
         return;
     }
+    if (enabled && (registeredHotkeys_ & (1u << kHotkeyStop)) == 0) {
+        RegisterHotkeys();
+        if ((registeredHotkeys_ & (1u << kHotkeyStop)) == 0) {
+            settings_.enabled = false;
+            ShowPanel();
+            return;
+        }
+    }
     if (enabled && !InitializeGraphics()) {
         enabled_ = false;
         settings_.enabled = false;
-        core::SettingsStore::Save(settings_);
         return;
     }
     enabled_ = enabled;
     settings_.enabled = enabled_;
     if (enabled_) {
         overlay_.Hide();
+        firstFrameDeadline_ = GetTickCount64() + kFirstFrameTimeoutMs;
         UpdateStatus(L"Filtre actif — attente de la première image.");
     } else {
         ShutdownGraphics();
         overlay_.Hide();
         UpdateStatus(L"Filtre désactivé.");
     }
-    core::SettingsStore::Save(settings_);
+    KeepPanelAboveOverlay();
+    SaveSettings();
 }
 
 void Win32App::RefreshMonitors() {
@@ -294,6 +345,15 @@ void Win32App::RenderAvailableFrame() {
     if (!enabled_ || !graphicsInitialized_) {
         return;
     }
+    const std::wstring captureError = capture_.LastError();
+    if (!captureError.empty() || !capture_.Running()) {
+        FailCapture(captureError.empty() ? L"La capture du moniteur s’est arrêtée." : captureError);
+        return;
+    }
+    if (firstFrameDeadline_ != 0 && GetTickCount64() >= firstFrameDeadline_) {
+        FailCapture(L"Aucune image présentée après 5 secondes. Vérifiez la disponibilité de la capture Windows puis réactivez le filtre.");
+        return;
+    }
     graphics::CapturedFrame newFrame;
     if (capture_.TryAcquireLatest(newFrame)) {
         latestFrame_ = std::move(newFrame);
@@ -301,27 +361,26 @@ void Win32App::RenderAvailableFrame() {
         renderRequested_ = true;
     }
     if (!haveFrame_ || !renderRequested_) {
-        if (!haveFrame_) {
-            const std::wstring detail = capture_.LastError();
-            if (!detail.empty()) {
-                const std::wstring waitingStatus = L"Filtre actif — " + detail;
-                if (statusText_ != waitingStatus) {
-                    UpdateStatus(waitingStatus);
-                }
-            }
-        }
         return;
     }
     if (renderer_.Render(latestFrame_, settings_.effects, settings_.framePacing)) {
         lastRenderedSequence_ = latestFrame_.sequence;
         renderRequested_ = false;
-        overlay_.Show();
-        UpdateStatus(L"Filtre actif — capture en cours.");
+        if (!overlay_.IsVisible()) {
+            overlay_.Show();
+            KeepPanelAboveOverlay();
+            firstFrameDeadline_ = 0;
+            UpdateStatus(L"Filtre actif — capture en cours.");
+        }
     } else {
-        // Wait for a fresh capture before retrying. This avoids a tight retry loop
-        // when a device or swap chain has just reported an error.
-        renderRequested_ = false;
+        FailCapture(RenderError(renderer_.LastError()));
     }
+}
+
+void Win32App::FailCapture(const std::wstring& detail) {
+    SetEnabled(false);
+    UpdateStatus(L"Filtre arrêté — " + detail);
+    ShowPanel();
 }
 
 void Win32App::EnsurePanel() {
@@ -345,6 +404,11 @@ void Win32App::RestartCaptureIfRunning() {
         UpdateStatus(L"Aucun moniteur actif n’a été détecté.");
         return;
     }
+    overlay_.Hide();
+    capture_.Stop();
+    latestFrame_ = {};
+    haveFrame_ = false;
+    lastRenderedSequence_ = 0;
     const auto& monitor = monitors_[std::min<std::size_t>(settings_.monitorIndex, monitors_.size() - 1)];
     overlay_.SetBounds(monitor.bounds);
     if (!renderer_.Resize(monitor.bounds)) {
@@ -355,20 +419,21 @@ void Win32App::RestartCaptureIfRunning() {
             return;
         }
     }
-    capture_.Stop();
     if (!StartCaptureForSelectedMonitor()) {
-        OnStopRequested();
-        UpdateStatus(L"Impossible de redémarrer la capture du moniteur.");
+        const std::wstring detail = capture_.LastError();
+        FailCapture(L"Impossible de redémarrer la capture du moniteur. " + detail);
         return;
     }
     renderRequested_ = true;
+    firstFrameDeadline_ = GetTickCount64() + kFirstFrameTimeoutMs;
+    UpdateStatus(L"Filtre actif — attente de la première image.");
 }
 
 void Win32App::RenderPanel() {
     if (!panel_.IsInitialized() || !IsWindowVisible(window_)) {
         return;
     }
-    const ui::PanelActions actions = panel_.Render(
+    panel_.Render(
         settings_,
         monitors_,
         overlay_.CaptureExcluded(),
@@ -376,16 +441,17 @@ void Win32App::RenderPanel() {
         capture_.DroppedFrames(),
         renderer_.PresentedFrames(),
         statusText_);
+}
+
+void Win32App::ProcessPanelActions() {
+    const ui::PanelActions actions = panel_.TakeActions();
     if (actions.toggleRequested) {
         SetEnabled(actions.desiredEnabled);
     }
     if (actions.stopRequested) {
         OnStopRequested();
     }
-    if (actions.monitorChanged) {
-        RestartCaptureIfRunning();
-    }
-    if (actions.pacingChanged) {
+    if (actions.monitorChanged || actions.pacingChanged) {
         RestartCaptureIfRunning();
     }
     if (actions.resetRequested) {
@@ -395,8 +461,8 @@ void Win32App::RenderPanel() {
     if (actions.settingsChanged) {
         renderRequested_ = true;
     }
-    if (actions.saveRequested || actions.monitorChanged || actions.pacingChanged) {
-        core::SettingsStore::Save(settings_);
+    if (actions.saveRequested || actions.resetRequested || actions.monitorChanged || actions.pacingChanged) {
+        SaveSettings(actions.saveRequested);
     }
 }
 
@@ -445,6 +511,10 @@ LRESULT CALLBACK Win32App::WindowProc(HWND window, UINT message, WPARAM wParam, 
 }
 
 LRESULT Win32App::HandleMessage(HWND window, UINT message, WPARAM wParam, LPARAM lParam) {
+    if (taskbarCreatedMessage_ != 0 && message == taskbarCreatedMessage_) {
+        AddTrayIcon();
+        return 0;
+    }
     if (panel_.HandleMessage(message, wParam, lParam)) {
         return 0;
     }
@@ -452,11 +522,23 @@ LRESULT Win32App::HandleMessage(HWND window, UINT message, WPARAM wParam, LPARAM
     case WM_GETMINMAXINFO: {
         auto* metrics = reinterpret_cast<MINMAXINFO*>(lParam);
         if (metrics != nullptr) {
-            metrics->ptMinTrackSize.x = 900;
-            metrics->ptMinTrackSize.y = 700;
+            const UINT dpi = GetDpiForWindow(window);
+            MONITORINFO monitor{sizeof(MONITORINFO)};
+            GetMonitorInfoW(MonitorFromWindow(window, MONITOR_DEFAULTTONEAREST), &monitor);
+            metrics->ptMinTrackSize.x = std::min(MulDiv(900, dpi, 96), static_cast<int>(monitor.rcWork.right - monitor.rcWork.left));
+            metrics->ptMinTrackSize.y = std::min(MulDiv(740, dpi, 96), static_cast<int>(monitor.rcWork.bottom - monitor.rcWork.top));
         }
         return 0;
     }
+    case WM_DPICHANGED: {
+        const RECT& suggested = *reinterpret_cast<RECT*>(lParam);
+        SetWindowPos(window, nullptr, suggested.left, suggested.top, suggested.right - suggested.left,
+                     suggested.bottom - suggested.top, SWP_NOACTIVATE | SWP_NOZORDER);
+        return 0;
+    }
+    case WM_APP + 2:
+        ShowPanel();
+        return 0;
     case WM_HOTKEY:
         switch (static_cast<int>(wParam)) {
         case kHotkeyToggle:
@@ -491,6 +573,13 @@ LRESULT Win32App::HandleMessage(HWND window, UINT message, WPARAM wParam, LPARAM
         }
         return 0;
     case WM_DESTROY:
+        // Release registrations while the HWND is still valid.
+        UnregisterHotkeys();
+        RemoveTrayIcon();
+        ShutdownGraphics();
+        panel_.Shutdown();
+        statusLabel_ = nullptr;
+        window_ = nullptr;
         PostQuitMessage(0);
         return 0;
     default:
@@ -504,30 +593,42 @@ int Win32App::Run() {
     }
     MSG message{};
     while (!shuttingDown_) {
-        bool processedMessage = false;
         while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE) != FALSE) {
-            processedMessage = true;
             if (message.message == WM_QUIT) {
                 shuttingDown_ = true;
                 break;
             }
-            TranslateMessage(&message);
-            DispatchMessageW(&message);
+            if (!IsDialogMessageW(window_, &message)) {
+                TranslateMessage(&message);
+                DispatchMessageW(&message);
+            } else {
+                panel_.EnsureFocusVisible();
+            }
         }
         if (shuttingDown_) {
             break;
         }
 
-        if (enabled_ && graphicsInitialized_) {
-            RenderPanel();
-            RenderAvailableFrame();
-            if (!processedMessage && capture_.FrameEvent() != nullptr) {
-                HANDLE event = capture_.FrameEvent();
-                MsgWaitForMultipleObjectsEx(1, &event, INFINITE, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
+        ProcessPanelActions();
+        RenderAvailableFrame();
+        RenderPanel();
+
+        // Actions may have enabled capture during this iteration. Select the
+        // wait source only now so that its first frame cannot be lost.
+        HANDLE event = enabled_ && graphicsInitialized_ ? capture_.FrameEvent() : nullptr;
+        DWORD timeout = INFINITE;
+        if (firstFrameDeadline_ != 0) {
+            const ULONGLONG now = GetTickCount64();
+            timeout = now >= firstFrameDeadline_ ? 0 : static_cast<DWORD>(firstFrameDeadline_ - now);
+        }
+        if (MsgWaitForMultipleObjectsEx(event != nullptr ? 1 : 0, event != nullptr ? &event : nullptr,
+                                      timeout, QS_ALLINPUT, MWMO_INPUTAVAILABLE) == WAIT_FAILED) {
+            if (enabled_) {
+                FailCapture(L"Impossible d’attendre les images de capture.");
+                RenderPanel();
+            } else {
+                return 1;
             }
-        } else {
-            RenderPanel();
-            WaitMessage();
         }
     }
     return static_cast<int>(message.wParam);

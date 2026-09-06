@@ -56,13 +56,17 @@ private:
     void RenderAvailableFrame();
     void EnsurePanel();
     void RenderPanel();
+    void ProcessPanelActions();
     void RestartCaptureIfRunning();
+    void FailCapture(const std::wstring& detail);
+    void KeepPanelAboveOverlay();
+    bool SaveSettings(bool announce = false);
 
     HINSTANCE instance_ = nullptr;
     HWND window_ = nullptr;
     HWND statusLabel_ = nullptr;
     bool enabled_ = false;
-    bool hotkeysRegistered_ = false;
+    UINT registeredHotkeys_ = 0;
     bool graphicsInitialized_ = false;
     bool shuttingDown_ = false;
     std::wstring statusText_;
@@ -77,7 +81,10 @@ private:
     bool haveFrame_ = false;
     bool renderRequested_ = false;
     std::uint64_t lastRenderedSequence_ = 0;
+    ULONGLONG firstFrameDeadline_ = 0;
     NOTIFYICONDATAW trayIcon_{};
+    bool trayIconAdded_ = false;
+    UINT taskbarCreatedMessage_ = 0;
 };
 
 } // namespace screenfx::platform

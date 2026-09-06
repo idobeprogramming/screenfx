@@ -34,7 +34,9 @@ public:
     bool Initialize(HWND window);
     void Shutdown();
     bool HandleMessage(UINT message, WPARAM wParam, LPARAM lParam);
-    PanelActions Render(
+    PanelActions TakeActions();
+    void EnsureFocusVisible();
+    void Render(
         core::AppSettings& settings,
         const std::vector<platform::MonitorInfo>& monitors,
         bool captureExcluded,
@@ -100,7 +102,9 @@ private:
     HWND FindControl(int id) const;
     static int ToTrackbar(float value, float minimum, float maximum);
     static float FromTrackbar(int position, float minimum, float maximum);
-    static void SetControlFont(HWND control);
+    void SetControlFont(HWND control);
+    void UpdateFont();
+    void Scroll(int bar, int position);
 
     HWND window_ = nullptr;
     HWND enabled_ = nullptr;
@@ -125,12 +129,17 @@ private:
     core::AppSettings* settings_ = nullptr;
     core::AppSettings syncedSettings_{};
     PanelActions pendingActions_{};
-    std::size_t monitorCount_ = 0;
+    std::vector<std::wstring> monitorLabels_;
+    HFONT font_ = nullptr;
+    UINT dpi_ = 96;
+    int scrollX_ = 0;
+    int scrollY_ = 0;
     std::uint64_t lastCapturedFrames_ = 0;
     std::uint64_t lastDroppedFrames_ = 0;
     std::uint64_t lastPresentedFrames_ = 0;
     std::wstring lastStatus_;
     bool statsInitialized_ = false;
+    bool lastCaptureExcluded_ = false;
     bool hasSyncedSettings_ = false;
     bool initialized_ = false;
     bool syncing_ = false;

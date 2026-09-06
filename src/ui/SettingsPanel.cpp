@@ -14,7 +14,7 @@ namespace {
 constexpr int kMargin = 24;
 constexpr int kColumnGap = 24;
 constexpr int kHeaderHeight = 24;
-constexpr int kRowHeight = 34;
+constexpr int kRowHeight = 38;
 constexpr int kControlHeight = 24;
 
 void SetPosition(HWND control, int x, int y, int width, int height) {
@@ -96,8 +96,20 @@ void SettingsPanel::TrackControl(HWND control) {
 
 void SettingsPanel::SetControlFont(HWND control) {
     if (control != nullptr) {
-        SendMessageW(control, WM_SETFONT, reinterpret_cast<WPARAM>(GetStockObject(DEFAULT_GUI_FONT)), TRUE);
+        SendMessageW(control, WM_SETFONT, reinterpret_cast<WPARAM>(font_ != nullptr ? font_ : GetStockObject(DEFAULT_GUI_FONT)), TRUE);
     }
+}
+
+void SettingsPanel::UpdateFont() {
+    dpi_ = GetDpiForWindow(window_);
+    if (dpi_ == 0) dpi_ = 96;
+    HFONT replacement = CreateFontW(-MulDiv(9, dpi_, 72), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+                                    DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                                    CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
+    HFONT previous = font_;
+    font_ = replacement;
+    for (HWND control : controls_) SetControlFont(control);
+    if (previous != nullptr) DeleteObject(previous);
 }
 
 HWND SettingsPanel::CreateLabel(const wchar_t* text, int x, int y, int width, int height) {
@@ -125,7 +137,7 @@ HWND SettingsPanel::CreateSlider(int id, const wchar_t* label, float minimum, fl
         0,
         TRACKBAR_CLASSW,
         L"",
-        WS_CHILD | WS_VISIBLE | TBS_AUTOTICKS | TBS_HORZ,
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP | TBS_AUTOTICKS | TBS_HORZ,
         0,
         0,
         100,
@@ -156,7 +168,7 @@ bool SettingsPanel::CreateControls() {
         0,
         WC_BUTTONW,
         L"Filtre actif",
-        WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTOCHECKBOX,
         0,
         0,
         150,
@@ -169,7 +181,7 @@ bool SettingsPanel::CreateControls() {
         0,
         WC_BUTTONW,
         L"Arrêt immédiat",
-        WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
         0,
         0,
         150,
@@ -248,7 +260,7 @@ bool SettingsPanel::CreateControls() {
         0,
         WC_BUTTONW,
         L"Réinitialiser les effets",
-        WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
         0,
         0,
         220,
@@ -261,7 +273,7 @@ bool SettingsPanel::CreateControls() {
         0,
         WC_BUTTONW,
         L"Enregistrer",
-        WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
         0,
         0,
         140,
@@ -295,6 +307,7 @@ bool SettingsPanel::Initialize(HWND window) {
         return false;
     }
     window_ = window;
+    UpdateFont();
     if (!CreateControls()) {
         Shutdown();
         return false;
@@ -318,7 +331,11 @@ void SettingsPanel::Shutdown() {
     syncedSettings_ = {};
     sliders_.clear();
     pendingActions_ = {};
-    monitorCount_ = 0;
+    monitorLabels_.clear();
+    if (font_ != nullptr) DeleteObject(font_);
+    font_ = nullptr;
+    scrollX_ = 0;
+    scrollY_ = 0;
     lastCapturedFrames_ = 0;
     lastDroppedFrames_ = 0;
     lastPresentedFrames_ = 0;
@@ -397,13 +414,16 @@ void SettingsPanel::SyncControls(const core::AppSettings& settings, const std::v
     if (pacingCombo_ != nullptr) {
         SendMessageW(pacingCombo_, CB_SETCURSEL, settings.framePacing == core::FramePacingMode::VSync ? 1 : 0, 0);
     }
-    if (monitorCombo_ != nullptr && monitorCount_ != monitors.size()) {
+    std::vector<std::wstring> labels;
+    labels.reserve(monitors.size());
+    for (const auto& monitor : monitors) labels.push_back(MonitorLabel(monitor));
+    if (monitorCombo_ != nullptr && monitorLabels_ != labels) {
         SendMessageW(monitorCombo_, CB_RESETCONTENT, 0, 0);
         for (const platform::MonitorInfo& monitor : monitors) {
             const std::wstring label = MonitorLabel(monitor);
             SendMessageW(monitorCombo_, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(label.c_str()));
         }
-        monitorCount_ = monitors.size();
+        monitorLabels_ = std::move(labels);
     }
     if (monitorCombo_ != nullptr) {
         if (monitors.empty()) {
@@ -455,7 +475,7 @@ void SettingsPanel::UpdateStats(
     std::uint64_t presentedFrames,
     std::wstring_view status) {
     if (statsInitialized_ && capturedFrames == lastCapturedFrames_ && droppedFrames == lastDroppedFrames_ &&
-        presentedFrames == lastPresentedFrames_ && status == lastStatus_) {
+        presentedFrames == lastPresentedFrames_ && status == lastStatus_ && captureExcluded == lastCaptureExcluded_) {
         return;
     }
     statsInitialized_ = true;
@@ -463,6 +483,7 @@ void SettingsPanel::UpdateStats(
     lastDroppedFrames_ = droppedFrames;
     lastPresentedFrames_ = presentedFrames;
     lastStatus_ = status;
+    lastCaptureExcluded_ = captureExcluded;
     if (status_ != nullptr) {
         SetWindowTextW(status_, std::wstring(status).c_str());
     }
@@ -484,23 +505,41 @@ void SettingsPanel::LayoutControls(int width, int height) {
     if (!initialized_ || window_ == nullptr) {
         return;
     }
-    const int usableWidth = std::max(600, width - 2 * kMargin);
+    const int logicalWidth = MulDiv(width, 96, dpi_);
+    const int logicalHeight = MulDiv(height, 96, dpi_);
+    width = std::max(900, logicalWidth);
+    height = std::max(730, logicalHeight);
+    // Keep every control reachable on small displays and when the DPI grows.
+    for (int bar : {SB_HORZ, SB_VERT}) {
+        SCROLLINFO scroll{sizeof(SCROLLINFO), SIF_RANGE | SIF_PAGE | SIF_POS};
+        scroll.nMax = (bar == SB_HORZ ? width : height) - 1;
+        scroll.nPage = static_cast<UINT>(std::max(1, bar == SB_HORZ ? logicalWidth : logicalHeight));
+        scroll.nPos = bar == SB_HORZ ? scrollX_ : scrollY_;
+        SetScrollInfo(window_, bar, &scroll, TRUE);
+        if (bar == SB_HORZ) scrollX_ = GetScrollPos(window_, bar);
+        else scrollY_ = GetScrollPos(window_, bar);
+    }
+    auto place = [this](HWND control, int x, int y, int w, int h) {
+        SetPosition(control, MulDiv(x - scrollX_, dpi_, 96), MulDiv(y - scrollY_, dpi_, 96),
+                    MulDiv(w, dpi_, 96), MulDiv(h, dpi_, 96));
+    };
+    const int usableWidth = width - 2 * kMargin;
     const int columnWidth = std::max(260, (usableWidth - kColumnGap) / 2);
     const int rightX = kMargin + columnWidth + kColumnGap;
     const int comboWidth = std::max(180, columnWidth - 120);
 
-    SetPosition(enabled_, kMargin, 16, 160, kControlHeight);
-    SetPosition(stop_, kMargin + 175, 16, 150, kControlHeight);
-    SetPosition(monitorLabel_, kMargin, 54, 90, kControlHeight);
-    SetPosition(monitorCombo_, kMargin + 92, 51, comboWidth, kControlHeight + 4);
-    SetPosition(pacingLabel_, rightX, 54, 150, kControlHeight);
-    SetPosition(pacingCombo_, rightX + 154, 51, std::max(160, columnWidth - 154), kControlHeight + 4);
-    SetPosition(status_, kMargin, 86, usableWidth, 36);
+    place(enabled_, kMargin, 16, 160, kControlHeight);
+    place(stop_, kMargin + 175, 16, 150, kControlHeight);
+    place(monitorLabel_, kMargin, 54, 90, kControlHeight);
+    place(monitorCombo_, kMargin + 92, 51, comboWidth, 220);
+    place(pacingLabel_, rightX, 54, 150, kControlHeight);
+    place(pacingCombo_, rightX + 154, 51, std::max(160, columnWidth - 154), 120);
+    place(status_, kMargin, 86, usableWidth, 42);
 
-    SetPosition(colorsHeader_, kMargin, 132, columnWidth, kHeaderHeight);
-    SetPosition(crtHeader_, kMargin, 132 + kHeaderHeight + 6 * kRowHeight + 8, columnWidth, kHeaderHeight);
-    SetPosition(imageHeader_, rightX, 132, columnWidth, kHeaderHeight);
-    SetPosition(generalHeader_, rightX, 132 + kHeaderHeight + 9 * kRowHeight + 8, columnWidth, kHeaderHeight);
+    place(colorsHeader_, kMargin, 132, columnWidth, kHeaderHeight);
+    place(crtHeader_, kMargin, 132 + kHeaderHeight + 6 * kRowHeight + 8, columnWidth, kHeaderHeight);
+    place(imageHeader_, rightX, 132, columnWidth, kHeaderHeight);
+    place(generalHeader_, rightX, 132 + kHeaderHeight + 9 * kRowHeight + 8, columnWidth, kHeaderHeight);
 
     auto placeColumn = [&](int firstId, int count, int x, int startY) {
         int row = 0;
@@ -514,8 +553,8 @@ void SettingsPanel::LayoutControls(int width, int height) {
             if (row >= count) {
                 break;
             }
-            SetPosition(binding.labelControl, x, startY + row * kRowHeight, columnWidth, 16);
-            SetPosition(binding.control, x, startY + row * kRowHeight + 14, columnWidth, kControlHeight);
+            place(binding.labelControl, x, startY + row * kRowHeight, columnWidth, 16);
+            place(binding.control, x, startY + row * kRowHeight + 14, columnWidth, kControlHeight);
             ++row;
         }
     };
@@ -524,18 +563,71 @@ void SettingsPanel::LayoutControls(int width, int height) {
     placeColumn(kSharpen, 9, rightX, 156);
     placeColumn(kGlobalIntensity, 1, rightX, 156 + kHeaderHeight + 9 * kRowHeight + 8);
 
-    const int bottomY = std::max(590, height - 116);
-    SetPosition(reset_, kMargin, bottomY, 220, kControlHeight + 4);
-    SetPosition(save_, kMargin + 232, bottomY, 140, kControlHeight + 4);
-    SetPosition(capturedStats_, rightX, bottomY - 2, columnWidth, 18);
-    SetPosition(presentedStats_, rightX, bottomY + 18, columnWidth, 18);
-    SetPosition(droppedStats_, rightX, bottomY + 38, columnWidth, 18);
-    SetPosition(captureState_, rightX, bottomY + 58, columnWidth, 18);
+    const int bottomY = std::max(624, height - 96);
+    place(reset_, kMargin, bottomY, 220, kControlHeight + 4);
+    place(save_, kMargin + 232, bottomY, 140, kControlHeight + 4);
+    place(capturedStats_, rightX, bottomY - 2, columnWidth, 18);
+    place(presentedStats_, rightX, bottomY + 18, columnWidth, 18);
+    place(droppedStats_, rightX, bottomY + 38, columnWidth, 18);
+    place(captureState_, rightX, bottomY + 58, columnWidth, 18);
+}
+
+void SettingsPanel::Scroll(int bar, int position) {
+    SetScrollPos(window_, bar, position, TRUE);
+    if (bar == SB_HORZ) scrollX_ = GetScrollPos(window_, bar);
+    else scrollY_ = GetScrollPos(window_, bar);
+    RECT client{};
+    GetClientRect(window_, &client);
+    LayoutControls(client.right, client.bottom);
+    InvalidateRect(window_, nullptr, TRUE);
+}
+
+void SettingsPanel::EnsureFocusVisible() {
+    HWND focused = GetFocus();
+    if (!initialized_ || focused == nullptr || !IsChild(window_, focused)) return;
+    RECT bounds{}, client{};
+    GetWindowRect(focused, &bounds);
+    MapWindowPoints(nullptr, window_, reinterpret_cast<POINT*>(&bounds), 2);
+    GetClientRect(window_, &client);
+    if (bounds.left < 0 || bounds.right > client.right) {
+        const int delta = bounds.left < 0 ? bounds.left : bounds.right - client.right;
+        Scroll(SB_HORZ, scrollX_ + MulDiv(delta, 96, dpi_));
+    }
+    if (bounds.top < 0 || bounds.bottom > client.bottom) {
+        const int delta = bounds.top < 0 ? bounds.top : bounds.bottom - client.bottom;
+        Scroll(SB_VERT, scrollY_ + MulDiv(delta, 96, dpi_));
+    }
 }
 
 bool SettingsPanel::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
     if (!initialized_) {
         return false;
+    }
+    if (message == WM_DPICHANGED) {
+        UpdateFont();
+        return false;
+    }
+    if ((message == WM_VSCROLL || message == WM_HSCROLL) && lParam == 0) {
+        const int bar = message == WM_VSCROLL ? SB_VERT : SB_HORZ;
+        SCROLLINFO info{sizeof(SCROLLINFO), SIF_ALL};
+        GetScrollInfo(window_, bar, &info);
+        int position = info.nPos;
+        switch (LOWORD(wParam)) {
+        case SB_LINEUP: position -= kRowHeight; break;
+        case SB_LINEDOWN: position += kRowHeight; break;
+        case SB_PAGEUP: position -= static_cast<int>(info.nPage); break;
+        case SB_PAGEDOWN: position += static_cast<int>(info.nPage); break;
+        case SB_THUMBTRACK: case SB_THUMBPOSITION: position = info.nTrackPos; break;
+        case SB_TOP: position = info.nMin; break;
+        case SB_BOTTOM: position = info.nMax; break;
+        default: return true;
+        }
+        Scroll(bar, position);
+        return true;
+    }
+    if (message == WM_MOUSEWHEEL) {
+        Scroll(SB_VERT, scrollY_ - GET_WHEEL_DELTA_WPARAM(wParam) * kRowHeight * 3 / WHEEL_DELTA);
+        return true;
     }
     if (message == WM_SIZE) {
         if (wParam != SIZE_MINIMIZED) {
@@ -642,7 +734,13 @@ bool SettingsPanel::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
     return false;
 }
 
-PanelActions SettingsPanel::Render(
+PanelActions SettingsPanel::TakeActions() {
+    const PanelActions actions = pendingActions_;
+    pendingActions_ = {};
+    return actions;
+}
+
+void SettingsPanel::Render(
     core::AppSettings& settings,
     const std::vector<platform::MonitorInfo>& monitors,
     bool captureExcluded,
@@ -650,19 +748,19 @@ PanelActions SettingsPanel::Render(
     std::uint64_t droppedFrames,
     std::uint64_t presentedFrames,
     std::wstring_view status) {
-    PanelActions actions = pendingActions_;
-    pendingActions_ = {};
     if (!initialized_ || window_ == nullptr || !IsWindowVisible(window_)) {
-        return actions;
+        return;
     }
     settings_ = &settings;
-    if (!hasSyncedSettings_ || !SettingsEqual(settings, syncedSettings_) || monitorCount_ != monitors.size()) {
+    std::vector<std::wstring> labels;
+    labels.reserve(monitors.size());
+    for (const auto& monitor : monitors) labels.push_back(MonitorLabel(monitor));
+    if (!hasSyncedSettings_ || !SettingsEqual(settings, syncedSettings_) || monitorLabels_ != labels) {
         SyncControls(settings, monitors);
         syncedSettings_ = settings;
         hasSyncedSettings_ = true;
     }
     UpdateStats(captureExcluded, capturedFrames, droppedFrames, presentedFrames, status);
-    return actions;
 }
 
 } // namespace screenfx::ui

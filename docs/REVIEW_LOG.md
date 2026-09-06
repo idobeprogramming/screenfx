@@ -41,3 +41,12 @@ Les premiers lots ci-dessous décrivent leurs vérifications historiques. Le tes
 - Tests Debug réussis : CTest 3/3 (moniteurs, pixels WARP, réglages). Le test de pixels compare l’identité, les scanlines/masque, le contournement des effets et le halo maximal; la couche de validation D3D11 ne signale pas d’erreur dans ce test.
 - Tests interactifs réussis : `screenfx_graphics_tests --desktop` dans la session utilisateur. Trois cycles capture/arrêt, pixels du bureau non noirs, présentation sans plafond et VSync, redimensionnement, affichage réel d’une petite mire, traversée du hit-test et exclusion de la superposition vérifiée par les pixels verts du fond. Aucune image n’est sauvegardée par ce test.
 - Revue : lecture des fichiers et du diff, vérification des verrous et de l’ordre de destruction. Les travaux partiels des sous-agents ont été intégrés puis revérifiés localement; leur revue finale indépendante n’a pas abouti à cause de la limite de session.
+
+## P28 — fiabiliser le panneau et le cycle de vie
+
+- Activation : traiter les actions avant de choisir l’événement d’attente évite de rester bloqué après la première activation. La superposition n’apparaît qu’après une présentation réussie; erreur de capture/GPU ou délai initial de cinq secondes : elle est retirée et le panneau explique l’arrêt.
+- Redémarrage : masquer l’ancienne image avant changement de moniteur ou de cadence. Garder le panneau au-dessus du filtre. Conserver les raccourcis disponibles et refuser l’activation si l’arrêt d’urgence est occupé.
+- Fermeture : libérer les raccourcis et l’icône avant de perdre le HWND; détruire les objets WinRT avant l’appartement; intercepter les erreurs au point d’entrée. Un deuxième lancement retrouve le panneau du processus existant.
+- Réglages : afficher les erreurs de chargement et de sauvegarde. Le panneau adapte ses polices au DPI, offre le défilement et la navigation Tab, et actualise la liste des moniteurs même si leur nombre ne change pas.
+- Vérifications : compilation Debug et CTest 3/3. Contrôle Computer Use du panneau sur le bureau 3840 × 2160 : capture et présentation progressent, Ctrl+Alt+F12 arrête le filtre, la case d’activation relance les images. Un deuxième lancement retrouve le même HWND et un seul processus. Le test automatisé P27 vérifie séparément le rendu en VSync et sans plafond.
+- Limites matérielles non simulées : débranchement réel d’un écran, changement de pilote, plusieurs DPI simultanés, HDR et jeux exclusifs. Ces cas ne sont pas présentés comme validés.
