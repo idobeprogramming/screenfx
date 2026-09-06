@@ -7,6 +7,8 @@ option(SCREENFX_BUILD_TESTS "Build ScreenFX tests" ON)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
+# Keep the executable portable with its shader folder, without a separate VC runtime install.
+set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 
 if(NOT WIN32)
     message(FATAL_ERROR "ScreenFX v1 targets Windows only")

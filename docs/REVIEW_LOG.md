@@ -50,3 +50,11 @@ Les premiers lots ci-dessous décrivent leurs vérifications historiques. Le tes
 - Réglages : afficher les erreurs de chargement et de sauvegarde. Le panneau adapte ses polices au DPI, offre le défilement et la navigation Tab, et actualise la liste des moniteurs même si leur nombre ne change pas.
 - Vérifications : compilation Debug et CTest 3/3. Contrôle Computer Use du panneau sur le bureau 3840 × 2160 : capture et présentation progressent, Ctrl+Alt+F12 arrête le filtre, la case d’activation relance les images. Un deuxième lancement retrouve le même HWND et un seul processus. Le test automatisé P27 vérifie séparément le rendu en VSync et sans plafond.
 - Limites matérielles non simulées : débranchement réel d’un écran, changement de pilote, plusieurs DPI simultanés, HDR et jeux exclusifs. Ces cas ne sont pas présentés comme validés.
+
+## P29 — reconstruire et préparer le lancement direct
+
+- `build.ps1` détecte Visual Studio avec `vswhere`, initialise son environnement dans un processus enfant, configure le projet, compile et exécute CTest. L’option `-Package` installe le programme et ses shaders dans `dist/bin`.
+- Runtime MSVC lié statiquement : inspection des dépendances de l’exécutable Release, aucune DLL redistribuable VC++ requise.
+- Vérifications finales réussies : script en Debug et Release, CTest 3/3 dans chaque configuration, installation, puis test `--desktop` sur la version Release dans la session interactive. Les empreintes de l’exécutable et des deux shaders correspondent entre la compilation et la distribution. `git diff --check` ne signale pas d’erreur.
+- Livrables : `build/release/ScreenFX.exe` et `dist/bin/ScreenFX.exe`, chacun accompagné de son dossier `shaders`. L’instance Debug ouverte pour les tests a été fermée.
+- Documentation : lancement par double-clic, effets initialement neutres, raccourcis, reconstruction sans CMake dans le PATH, dépannage et limites de compatibilité décrits dans le README.
