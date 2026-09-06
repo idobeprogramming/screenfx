@@ -21,6 +21,10 @@ struct PanelActions {
     bool resetRequested = false;
     bool monitorChanged = false;
     bool pacingChanged = false;
+    bool savePresetRequested = false;
+    bool applyPresetRequested = false;
+    bool pickColorRequested = false;
+    std::wstring presetName;
 };
 
 class SettingsPanel {
@@ -36,6 +40,7 @@ public:
     bool HandleMessage(UINT message, WPARAM wParam, LPARAM lParam);
     PanelActions TakeActions();
     void EnsureFocusVisible();
+    void SetPresetNames(const std::vector<std::wstring>& names);
     void Render(
         core::AppSettings& settings,
         const std::vector<platform::MonitorInfo>& monitors,
@@ -54,6 +59,11 @@ private:
         kPacing = 1004,
         kSave = 1005,
         kReset = 1006,
+        kPreset = 1007,
+        kApplyPreset = 1008,
+        kSavePreset = 1009,
+        kTintColor = 1010,
+        kTintSwatch = 1011,
         kBrightness = 1101,
         kContrast = 1102,
         kSaturation = 1103,
@@ -75,6 +85,7 @@ private:
         kGrain = 1308,
         kGrainSize = 1309,
         kGlobalIntensity = 1401,
+        kTintIntensity = 1402,
     };
 
     struct SliderBinding {
@@ -105,6 +116,7 @@ private:
     void SetControlFont(HWND control);
     void UpdateFont();
     void Scroll(int bar, int position);
+    std::wstring PresetName() const;
 
     HWND window_ = nullptr;
     HWND enabled_ = nullptr;
@@ -124,6 +136,13 @@ private:
     HWND captureState_ = nullptr;
     HWND save_ = nullptr;
     HWND reset_ = nullptr;
+    HWND presetLabel_ = nullptr;
+    HWND presetCombo_ = nullptr;
+    HWND applyPreset_ = nullptr;
+    HWND savePreset_ = nullptr;
+    HWND tintColor_ = nullptr;
+    HWND tintSwatch_ = nullptr;
+    COLORREF tintColorValue_ = RGB(255, 255, 255);
     std::vector<HWND> controls_;
     std::vector<SliderBinding> sliders_;
     core::AppSettings* settings_ = nullptr;

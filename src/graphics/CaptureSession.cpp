@@ -53,7 +53,7 @@ bool CaptureSession::Start(HMONITOR monitor, SIZE size, bool /*uncapped*/) {
     Stop(); state_ = std::make_shared<State>();
     auto state = state_;
     if (!state->event || !monitor || size.cx <= 0 || size.cy <= 0 || !graphics_.Device()) {
-        state->Fail(L"Le moniteur ou les ressources de capture ne sont pas disponibles."); return false;
+        state->Fail(L"The monitor or capture resources are unavailable."); return false;
     }
     try {
         auto factory = winrt::get_activation_factory<GraphicsCaptureItem, IGraphicsCaptureItemInterop>();
@@ -81,15 +81,15 @@ bool CaptureSession::Start(HMONITOR monitor, SIZE size, bool /*uncapped*/) {
         frameRegistered_ = true;
         closedToken_ = item_.Closed([state](auto const&, auto const&) {
             std::lock_guard lock(state->mutex);
-            if (state->running) state->Fail(L"Le moniteur capturé a été fermé ou déconnecté.");
+            if (state->running) state->Fail(L"The captured monitor was closed or disconnected.");
         });
         closedRegistered_ = true;
         { std::lock_guard lock(state->mutex); state->running = true; }
         session_.StartCapture(); return true;
     } catch (const winrt::hresult_error& error) {
-        std::lock_guard lock(state->mutex); state->Fail(CaptureError(L"Démarrage de la capture impossible", error.code()));
+        std::lock_guard lock(state->mutex); state->Fail(CaptureError(L"Could not start capture", error.code()));
     } catch (...) {
-        std::lock_guard lock(state->mutex); state->Fail(L"Démarrage de la capture impossible.");
+        std::lock_guard lock(state->mutex); state->Fail(L"Could not start capture.");
     }
     Stop(); return false;
 }
@@ -155,9 +155,9 @@ void CaptureSession::OnFrameArrived(const std::shared_ptr<State>& state, Direct3
         state->latest.systemTime = lease.frame.SystemRelativeTime().count();
         SetEvent(state->event);
     } catch (const winrt::hresult_error& error) {
-        ++state->dropped; state->Fail(CaptureError(L"Lecture de l’image capturée impossible", error.code()));
+        ++state->dropped; state->Fail(CaptureError(L"Could not read the captured frame", error.code()));
     } catch (...) {
-        ++state->dropped; state->Fail(L"Lecture de l’image capturée impossible.");
+        ++state->dropped; state->Fail(L"Could not read the captured frame.");
     }
 }
 bool CaptureSession::TryAcquireLatest(CapturedFrame& frame) {

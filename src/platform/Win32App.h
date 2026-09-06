@@ -61,6 +61,10 @@ private:
     void FailCapture(const std::wstring& detail);
     void KeepPanelAboveOverlay();
     bool SaveSettings(bool announce = false);
+    void RefreshPresetNames();
+    void SavePreset(std::wstring name);
+    void ApplyPreset(std::wstring name);
+    void PickTintColor();
 
     HINSTANCE instance_ = nullptr;
     HWND window_ = nullptr;
@@ -71,6 +75,8 @@ private:
     bool shuttingDown_ = false;
     std::wstring statusText_;
     core::AppSettings settings_{};
+    std::vector<core::Preset> presets_;
+    COLORREF customColors_[16]{};
     std::vector<MonitorInfo> monitors_;
     graphics::D3D11Context graphics_;
     graphics::OverlayWindow overlay_;

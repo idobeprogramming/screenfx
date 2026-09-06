@@ -51,6 +51,7 @@ target_link_libraries(screenfx PRIVATE
     shell32
     shlwapi
     comctl32
+    comdlg32
     d3d11
     dxgi
     dcomp
@@ -131,4 +132,18 @@ if(SCREENFX_BUILD_TESTS)
     target_link_libraries(screenfx_settings_tests PRIVATE shell32 ole32)
     add_test(NAME screenfx_settings COMMAND screenfx_settings_tests)
     set_tests_properties(screenfx_settings PROPERTIES TIMEOUT 15)
+    add_executable(screenfx_panel_tests tests/SettingsPanelTests.cpp src/ui/SettingsPanel.cpp)
+    target_include_directories(screenfx_panel_tests PRIVATE src)
+    target_compile_definitions(screenfx_panel_tests PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
+    target_compile_options(screenfx_panel_tests PRIVATE /W4 /permissive- /EHsc /utf-8)
+    target_link_libraries(screenfx_panel_tests PRIVATE user32 gdi32 comctl32)
+    add_test(NAME screenfx_panel COMMAND screenfx_panel_tests)
+    set_tests_properties(screenfx_panel PROPERTIES TIMEOUT 30)
+    add_executable(screenfx_presets_tests tests/PresetsStoreTests.cpp src/core/SettingsStore.cpp)
+    target_include_directories(screenfx_presets_tests PRIVATE src)
+    target_compile_definitions(screenfx_presets_tests PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
+    target_compile_options(screenfx_presets_tests PRIVATE /W4 /permissive- /EHsc /utf-8)
+    target_link_libraries(screenfx_presets_tests PRIVATE shell32 ole32)
+    add_test(NAME screenfx_presets COMMAND screenfx_presets_tests)
+    set_tests_properties(screenfx_presets PROPERTIES TIMEOUT 30)
 endif()

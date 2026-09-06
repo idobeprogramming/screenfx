@@ -38,7 +38,7 @@ int APIENTRY wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int show
                 }
                 Sleep(20);
             } while (GetTickCount64() < deadline);
-            MessageBoxW(nullptr, L"ScreenFX est déjà en cours de démarrage. Réessayez dans un instant.",
+            MessageBoxW(nullptr, L"ScreenFX is already starting. Please try again in a moment.",
                         L"ScreenFX", MB_OK | MB_ICONINFORMATION);
             return 0;
         }
@@ -49,10 +49,10 @@ int APIENTRY wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int show
     } catch (const winrt::hresult_error& error) {
         wchar_t code[32]{};
         swprintf_s(code, L"0x%08lX", static_cast<unsigned long>(error.code()));
-        const std::wstring message = L"ScreenFX s’est arrêté.\n\n" + std::wstring(code) + L" : " + error.message().c_str();
+        const std::wstring message = L"ScreenFX stopped.\n\n" + std::wstring(code) + L": " + error.message().c_str();
         MessageBoxW(nullptr, message.c_str(), L"ScreenFX", MB_OK | MB_ICONERROR);
     } catch (...) {
-        MessageBoxW(nullptr, L"ScreenFX s’est arrêté à la suite d’une erreur inattendue.", L"ScreenFX", MB_OK | MB_ICONERROR);
+        MessageBoxW(nullptr, L"ScreenFX stopped because of an unexpected error.", L"ScreenFX", MB_OK | MB_ICONERROR);
     }
     return 1;
 }

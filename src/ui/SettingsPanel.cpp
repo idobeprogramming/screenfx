@@ -27,7 +27,7 @@ std::wstring MonitorLabel(const platform::MonitorInfo& monitor) {
     return monitor.deviceName + L"  " +
            std::to_wstring(monitor.bounds.right - monitor.bounds.left) + L" × " +
            std::to_wstring(monitor.bounds.bottom - monitor.bounds.top) +
-           (monitor.primary ? L"  (principal)" : L"");
+           (monitor.primary ? L"  (primary)" : L"");
 }
 
 bool EffectsEqual(const core::EffectSettings& left, const core::EffectSettings& right) {
@@ -52,7 +52,8 @@ bool EffectsEqual(const core::EffectSettings& left, const core::EffectSettings& 
                left.vignetteIntensity,
                left.vignetteWidth,
                left.grainIntensity,
-               left.grainSize) ==
+               left.grainSize,
+               left.tintRed, left.tintGreen, left.tintBlue, left.tintIntensity) ==
            std::tie(
                right.globalIntensity,
                right.brightness,
@@ -74,7 +75,8 @@ bool EffectsEqual(const core::EffectSettings& left, const core::EffectSettings& 
                right.vignetteIntensity,
                right.vignetteWidth,
                right.grainIntensity,
-               right.grainSize);
+               right.grainSize,
+               right.tintRed, right.tintGreen, right.tintBlue, right.tintIntensity);
 }
 
 bool SettingsEqual(const core::AppSettings& left, const core::AppSettings& right) {
@@ -167,7 +169,7 @@ bool SettingsPanel::CreateControls() {
     enabled_ = CreateWindowExW(
         0,
         WC_BUTTONW,
-        L"Filtre actif",
+        L"Enable filter",
         WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTOCHECKBOX,
         0,
         0,
@@ -180,7 +182,7 @@ bool SettingsPanel::CreateControls() {
     stop_ = CreateWindowExW(
         0,
         WC_BUTTONW,
-        L"Arrêt immédiat",
+        L"Stop immediately",
         WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
         0,
         0,
@@ -190,7 +192,7 @@ bool SettingsPanel::CreateControls() {
         reinterpret_cast<HMENU>(static_cast<INT_PTR>(kStop)),
         module,
         nullptr);
-    monitorLabel_ = CreateLabel(L"Moniteur", 0, 0, 1, 1);
+    monitorLabel_ = CreateLabel(L"Monitor", 0, 0, 1, 1);
     monitorCombo_ = CreateWindowExW(
         0,
         WC_COMBOBOXW,
@@ -204,7 +206,7 @@ bool SettingsPanel::CreateControls() {
         reinterpret_cast<HMENU>(static_cast<INT_PTR>(kMonitor)),
         module,
         nullptr);
-    pacingLabel_ = CreateLabel(L"Fréquence de présentation", 0, 0, 1, 1);
+    pacingLabel_ = CreateLabel(L"Presentation mode", 0, 0, 1, 1);
     pacingCombo_ = CreateWindowExW(
         0,
         WC_COMBOBOXW,
@@ -219,47 +221,66 @@ bool SettingsPanel::CreateControls() {
         module,
         nullptr);
     if (pacingCombo_ != nullptr) {
-        SendMessageW(pacingCombo_, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Sans plafond logiciel"));
-        SendMessageW(pacingCombo_, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Synchronisé à l’écran"));
+        SendMessageW(pacingCombo_, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Uncapped"));
+        SendMessageW(pacingCombo_, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"VSync"));
     }
+
+    presetLabel_ = CreateLabel(L"Preset name", 0, 0, 1, 1);
+    presetCombo_ = CreateWindowExW(0, WC_COMBOBOXW, L"",
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP | CBS_DROPDOWN | CBS_AUTOHSCROLL | WS_VSCROLL,
+        0, 0, 280, 220, window_, reinterpret_cast<HMENU>(kPreset), module, nullptr);
+    SendMessageW(presetCombo_, CB_LIMITTEXT, 80, 0);
+    auto button = [&](int id, const wchar_t* label) {
+        return CreateWindowExW(0, WC_BUTTONW, label, WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
+            0, 0, 150, kControlHeight, window_, reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)), module, nullptr);
+    };
+    applyPreset_ = button(kApplyPreset, L"Apply preset");
+    savePreset_ = button(kSavePreset, L"Save preset");
+    tintColor_ = button(kTintColor, L"Tint color: #FFFFFF");
+    tintSwatch_ = CreateWindowExW(0, WC_STATICW, L"Tint preview", WS_CHILD | WS_VISIBLE | SS_OWNERDRAW,
+        0, 0, 40, 24, window_, reinterpret_cast<HMENU>(kTintSwatch), module, nullptr);
 
     status_ = CreateLabel(L"", 0, 0, 1, 1);
     capturedStats_ = CreateLabel(L"", 0, 0, 1, 1);
     presentedStats_ = CreateLabel(L"", 0, 0, 1, 1);
     droppedStats_ = CreateLabel(L"", 0, 0, 1, 1);
     captureState_ = CreateLabel(L"", 0, 0, 1, 1);
-    colorsHeader_ = CreateLabel(L"Couleurs", 0, 0, 1, 1);
+    colorsHeader_ = CreateLabel(L"Colors", 0, 0, 1, 1);
     crtHeader_ = CreateLabel(L"CRT", 0, 0, 1, 1);
     imageHeader_ = CreateLabel(L"Image", 0, 0, 1, 1);
-    generalHeader_ = CreateLabel(L"Intensité", 0, 0, 1, 1);
+    generalHeader_ = CreateLabel(L"Intensity and tint", 0, 0, 1, 1);
 
     sliders_.clear();
-    CreateSlider(kBrightness, L"Luminosité", -1.0F, 1.0F);
-    CreateSlider(kContrast, L"Contraste", 0.0F, 4.0F);
+    CreateSlider(kBrightness, L"Brightness", -1.0F, 1.0F);
+    CreateSlider(kContrast, L"Contrast", 0.0F, 4.0F);
     CreateSlider(kSaturation, L"Saturation", 0.0F, 4.0F);
     CreateSlider(kGamma, L"Gamma", 0.1F, 4.0F);
-    CreateSlider(kGrayscale, L"Niveaux de gris", 0.0F, 1.0F);
-    CreateSlider(kSepia, L"Sépia", 0.0F, 1.0F);
+    CreateSlider(kGrayscale, L"Grayscale", 0.0F, 1.0F);
+    CreateSlider(kSepia, L"Sepia", 0.0F, 1.0F);
     CreateSlider(kScanline, L"Scanlines", 0.0F, 1.0F);
-    CreateSlider(kSpacing, L"Espacement des scanlines", 1.0F, 8.0F);
-    CreateSlider(kThickness, L"Épaisseur des scanlines", 0.05F, 1.0F);
-    CreateSlider(kPhosphor, L"Masque phosphore RGB", 0.0F, 1.0F);
-    CreateSlider(kPixelSize, L"Pixellisation", 1.0F, 32.0F);
-    CreateSlider(kSharpen, L"Netteté", 0.0F, 2.0F);
-    CreateSlider(kChromatic, L"Aberration chromatique", 0.0F, 8.0F);
-    CreateSlider(kBloom, L"Halo", 0.0F, 2.0F);
-    CreateSlider(kBloomThreshold, L"Seuil du halo", 0.0F, 1.0F);
-    CreateSlider(kBloomRadius, L"Rayon du halo", 0.5F, 8.0F);
+    CreateSlider(kSpacing, L"Scanline spacing", 1.0F, 8.0F);
+    CreateSlider(kThickness, L"Scanline thickness", 0.05F, 1.0F);
+    CreateSlider(kPhosphor, L"RGB phosphor mask", 0.0F, 1.0F);
+    CreateSlider(kPixelSize, L"Pixelation", 1.0F, 32.0F);
+    CreateSlider(kSharpen, L"Sharpness", 0.0F, 2.0F);
+    CreateSlider(kChromatic, L"Chromatic aberration", 0.0F, 8.0F);
+    CreateSlider(kBloom, L"Bloom", 0.0F, 2.0F);
+    CreateSlider(kBloomThreshold, L"Bloom threshold", 0.0F, 1.0F);
+    CreateSlider(kBloomRadius, L"Bloom radius", 0.5F, 8.0F);
     CreateSlider(kVignette, L"Vignette", 0.0F, 1.0F);
-    CreateSlider(kVignetteWidth, L"Largeur vignette", 0.1F, 1.0F);
+    CreateSlider(kVignetteWidth, L"Vignette width", 0.1F, 1.0F);
     CreateSlider(kGrain, L"Grain", 0.0F, 1.0F);
-    CreateSlider(kGrainSize, L"Taille du grain", 0.25F, 8.0F);
-    CreateSlider(kGlobalIntensity, L"Intensité globale", 0.0F, 1.0F);
+    CreateSlider(kGrainSize, L"Grain size", 0.25F, 8.0F);
+    CreateSlider(kGlobalIntensity, L"Global intensity", 0.0F, 1.0F);
+    CreateSlider(kTintIntensity, L"Tint strength", 0.0F, 1.0F);
+    // Keep keyboard navigation in the same order as the visible effect controls.
+    SetWindowPos(tintColor_, FindControl(kGlobalIntensity), 0, 0, 0, 0,
+                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
 
     reset_ = CreateWindowExW(
         0,
         WC_BUTTONW,
-        L"Réinitialiser les effets",
+        L"Reset effects",
         WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
         0,
         0,
@@ -272,7 +293,7 @@ bool SettingsPanel::CreateControls() {
     save_ = CreateWindowExW(
         0,
         WC_BUTTONW,
-        L"Enregistrer",
+        L"Save settings",
         WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
         0,
         0,
@@ -283,9 +304,11 @@ bool SettingsPanel::CreateControls() {
         module,
         nullptr);
 
-    const std::array<HWND, 6> ownedControls{enabled_, stop_, monitorCombo_, pacingCombo_, reset_, save_};
+    const std::array ownedControls{enabled_, stop_, monitorCombo_, pacingCombo_, reset_, save_,
+        presetCombo_, applyPreset_, savePreset_, tintColor_, tintSwatch_};
     for (HWND control : ownedControls) {
         TrackControl(control);
+        SetControlFont(control);
     }
 
     const std::array<HWND, 8> controls{
@@ -296,7 +319,7 @@ bool SettingsPanel::CreateControls() {
     return enabled_ != nullptr && stop_ != nullptr && monitorCombo_ != nullptr && pacingCombo_ != nullptr &&
            std::all_of(sliders_.begin(), sliders_.end(), [](const SliderBinding& binding) {
                return binding.control != nullptr && binding.labelControl != nullptr;
-           }) && reset_ != nullptr && save_ != nullptr;
+           }) && std::all_of(ownedControls.begin(), ownedControls.end(), [](HWND control) { return control != nullptr; });
 }
 
 bool SettingsPanel::Initialize(HWND window) {
@@ -360,6 +383,25 @@ void SettingsPanel::Shutdown() {
     crtHeader_ = nullptr;
     imageHeader_ = nullptr;
     generalHeader_ = nullptr;
+    presetLabel_ = presetCombo_ = applyPreset_ = savePreset_ = tintColor_ = tintSwatch_ = nullptr;
+}
+
+std::wstring SettingsPanel::PresetName() const {
+    const int length = GetWindowTextLengthW(presetCombo_);
+    std::wstring name(static_cast<std::size_t>(length) + 1, L'\0');
+    name.resize(GetWindowTextW(presetCombo_, name.data(), length + 1));
+    return name;
+}
+
+void SettingsPanel::SetPresetNames(const std::vector<std::wstring>& names) {
+    if (!presetCombo_) return;
+    const auto currentName = PresetName();
+    const bool wasSyncing = syncing_;
+    syncing_ = true;
+    SendMessageW(presetCombo_, CB_RESETCONTENT, 0, 0);
+    for (const auto& name : names) SendMessageW(presetCombo_, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(name.c_str()));
+    SetWindowTextW(presetCombo_, currentName.c_str());
+    syncing_ = wasSyncing;
 }
 
 HWND SettingsPanel::FindControl(int id) const {
@@ -434,7 +476,7 @@ void SettingsPanel::SyncControls(const core::AppSettings& settings, const std::v
         }
     }
 
-    const std::array<std::pair<int, float>, 21> values{
+    const std::array<std::pair<int, float>, 22> values{
         std::pair{kBrightness, settings.effects.brightness},
         std::pair{kContrast, settings.effects.contrast},
         std::pair{kSaturation, settings.effects.saturation},
@@ -456,6 +498,7 @@ void SettingsPanel::SyncControls(const core::AppSettings& settings, const std::v
         std::pair{kGrain, settings.effects.grainIntensity},
         std::pair{kGrainSize, settings.effects.grainSize},
         std::pair{kGlobalIntensity, settings.effects.globalIntensity},
+        std::pair{kTintIntensity, settings.effects.tintIntensity},
     };
     for (const auto& [id, value] : values) {
         for (const SliderBinding& binding : sliders_) {
@@ -465,6 +508,12 @@ void SettingsPanel::SyncControls(const core::AppSettings& settings, const std::v
             }
         }
     }
+    const auto channel = [](float value) { return static_cast<BYTE>(std::clamp(value, 0.0F, 1.0F) * 255.0F + 0.5F); };
+    tintColorValue_ = RGB(channel(settings.effects.tintRed), channel(settings.effects.tintGreen), channel(settings.effects.tintBlue));
+    wchar_t label[48]{};
+    swprintf_s(label, L"Tint color: #%02X%02X%02X", GetRValue(tintColorValue_), GetGValue(tintColorValue_), GetBValue(tintColorValue_));
+    SetWindowTextW(tintColor_, label);
+    InvalidateRect(tintSwatch_, nullptr, TRUE);
     syncing_ = false;
 }
 
@@ -488,16 +537,16 @@ void SettingsPanel::UpdateStats(
         SetWindowTextW(status_, std::wstring(status).c_str());
     }
     if (capturedStats_ != nullptr) {
-        SetWindowTextW(capturedStats_, (L"Frames capturées : " + std::to_wstring(capturedFrames)).c_str());
+        SetWindowTextW(capturedStats_, (L"Captured frames: " + std::to_wstring(capturedFrames)).c_str());
     }
     if (presentedStats_ != nullptr) {
-        SetWindowTextW(presentedStats_, (L"Frames présentées : " + std::to_wstring(presentedFrames)).c_str());
+        SetWindowTextW(presentedStats_, (L"Presented frames: " + std::to_wstring(presentedFrames)).c_str());
     }
     if (droppedStats_ != nullptr) {
-        SetWindowTextW(droppedStats_, (L"Frames perdues : " + std::to_wstring(droppedFrames)).c_str());
+        SetWindowTextW(droppedStats_, (L"Dropped frames: " + std::to_wstring(droppedFrames)).c_str());
     }
     if (captureState_ != nullptr) {
-        SetWindowTextW(captureState_, captureExcluded ? L"Exclusion de capture : active" : L"Exclusion de capture : indisponible");
+        SetWindowTextW(captureState_, captureExcluded ? L"Capture exclusion: active" : L"Capture exclusion: unavailable");
     }
 }
 
@@ -508,7 +557,7 @@ void SettingsPanel::LayoutControls(int width, int height) {
     const int logicalWidth = MulDiv(width, 96, dpi_);
     const int logicalHeight = MulDiv(height, 96, dpi_);
     width = std::max(900, logicalWidth);
-    height = std::max(730, logicalHeight);
+    height = std::max(830, logicalHeight);
     // Keep every control reachable on small displays and when the DPI grows.
     for (int bar : {SB_HORZ, SB_VERT}) {
         SCROLLINFO scroll{sizeof(SCROLLINFO), SIF_RANGE | SIF_PAGE | SIF_POS};
@@ -534,12 +583,16 @@ void SettingsPanel::LayoutControls(int width, int height) {
     place(monitorCombo_, kMargin + 92, 51, comboWidth, 220);
     place(pacingLabel_, rightX, 54, 150, kControlHeight);
     place(pacingCombo_, rightX + 154, 51, std::max(160, columnWidth - 154), 120);
-    place(status_, kMargin, 86, usableWidth, 42);
+    place(presetLabel_, kMargin, 92, 90, kControlHeight);
+    place(presetCombo_, kMargin + 92, 89, comboWidth, 220);
+    place(applyPreset_, rightX, 88, 150, 28);
+    place(savePreset_, rightX + 162, 88, 150, 28);
+    place(status_, kMargin, 128, usableWidth, 42);
 
-    place(colorsHeader_, kMargin, 132, columnWidth, kHeaderHeight);
-    place(crtHeader_, kMargin, 132 + kHeaderHeight + 6 * kRowHeight + 8, columnWidth, kHeaderHeight);
-    place(imageHeader_, rightX, 132, columnWidth, kHeaderHeight);
-    place(generalHeader_, rightX, 132 + kHeaderHeight + 9 * kRowHeight + 8, columnWidth, kHeaderHeight);
+    place(colorsHeader_, kMargin, 174, columnWidth, kHeaderHeight);
+    place(crtHeader_, kMargin, 174 + kHeaderHeight + 6 * kRowHeight + 8, columnWidth, kHeaderHeight);
+    place(imageHeader_, rightX, 174, columnWidth, kHeaderHeight);
+    place(generalHeader_, rightX, 174 + kHeaderHeight + 9 * kRowHeight + 8, columnWidth, kHeaderHeight);
 
     auto placeColumn = [&](int firstId, int count, int x, int startY) {
         int row = 0;
@@ -547,7 +600,8 @@ void SettingsPanel::LayoutControls(int width, int height) {
             if ((firstId == kBrightness && binding.id > kSepia) ||
                 (firstId == kScanline && (binding.id < kScanline || binding.id > kPixelSize)) ||
                 (firstId == kSharpen && (binding.id < kSharpen || binding.id > kGrainSize)) ||
-                (firstId == kGlobalIntensity && binding.id != kGlobalIntensity)) {
+                (firstId == kGlobalIntensity && binding.id != kGlobalIntensity) ||
+                (firstId == kTintIntensity && binding.id != kTintIntensity)) {
                 continue;
             }
             if (row >= count) {
@@ -558,12 +612,15 @@ void SettingsPanel::LayoutControls(int width, int height) {
             ++row;
         }
     };
-    placeColumn(kBrightness, 6, kMargin, 156);
-    placeColumn(kScanline, 5, kMargin, 156 + kHeaderHeight + 6 * kRowHeight + 8);
-    placeColumn(kSharpen, 9, rightX, 156);
-    placeColumn(kGlobalIntensity, 1, rightX, 156 + kHeaderHeight + 9 * kRowHeight + 8);
+    placeColumn(kBrightness, 6, kMargin, 198);
+    placeColumn(kScanline, 5, kMargin, 198 + kHeaderHeight + 6 * kRowHeight + 8);
+    placeColumn(kSharpen, 9, rightX, 198);
+    placeColumn(kGlobalIntensity, 1, rightX, 198 + kHeaderHeight + 9 * kRowHeight + 8);
+    place(tintSwatch_, rightX, 622, 36, 28);
+    place(tintColor_, rightX + 48, 622, columnWidth - 48, 28);
+    placeColumn(kTintIntensity, 1, rightX, 662);
 
-    const int bottomY = std::max(624, height - 96);
+    const int bottomY = std::max(734, height - 96);
     place(reset_, kMargin, bottomY, 220, kControlHeight + 4);
     place(save_, kMargin + 232, bottomY, 140, kControlHeight + 4);
     place(capturedStats_, rightX, bottomY - 2, columnWidth, 18);
@@ -602,6 +659,16 @@ void SettingsPanel::EnsureFocusVisible() {
 bool SettingsPanel::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
     if (!initialized_) {
         return false;
+    }
+    if (message == WM_DRAWITEM && wParam == kTintSwatch) {
+        const auto* draw = reinterpret_cast<const DRAWITEMSTRUCT*>(lParam);
+        if (draw != nullptr) {
+            HBRUSH brush = CreateSolidBrush(tintColorValue_);
+            FillRect(draw->hDC, &draw->rcItem, brush);
+            DeleteObject(brush);
+            FrameRect(draw->hDC, &draw->rcItem, GetSysColorBrush(COLOR_WINDOWFRAME));
+        }
+        return true;
     }
     if (message == WM_DPICHANGED) {
         UpdateFont();
@@ -642,6 +709,21 @@ bool SettingsPanel::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
             return false;
         }
         switch (id) {
+        case kSavePreset:
+        case kApplyPreset:
+            if (code == BN_CLICKED) {
+                pendingActions_.presetName = PresetName();
+                pendingActions_.savePresetRequested = id == kSavePreset;
+                pendingActions_.applyPresetRequested = id == kApplyPreset;
+                return true;
+            }
+            break;
+        case kTintColor:
+            if (code == BN_CLICKED) {
+                pendingActions_.pickColorRequested = true;
+                return true;
+            }
+            break;
         case kEnabled:
             if (code == BN_CLICKED) {
                 pendingActions_.toggleRequested = true;
@@ -725,6 +807,7 @@ bool SettingsPanel::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
             case kGrain: settings_->effects.grainIntensity = value; break;
             case kGrainSize: settings_->effects.grainSize = value; break;
             case kGlobalIntensity: settings_->effects.globalIntensity = value; break;
+            case kTintIntensity: settings_->effects.tintIntensity = value; break;
             default: break;
             }
             pendingActions_.settingsChanged = true;

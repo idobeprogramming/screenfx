@@ -1,37 +1,47 @@
 # ScreenFX
 
-ScreenFX est une application Windows qui capture un moniteur, applique des effets GPU et restitue le résultat dans une superposition plein écran. La première cible est le bureau et les jeux en fenêtre ou sans bordure.
+ScreenFX is a Windows application that captures a monitor, applies GPU effects, and displays the result in a full-screen overlay. It targets the desktop and games running in windowed or borderless mode.
 
 ## Stack
 
-- C++20, Win32 et C++/WinRT
+- C++20, Win32, and C++/WinRT
 - Windows Graphics Capture
-- Direct3D 11, DXGI et DirectComposition
+- Direct3D 11, DXGI, and DirectComposition
 - HLSL Shader Model 5
-- Contrôles Win32 natifs pour le panneau de réglages
+- Native Win32 controls for the settings panel
 - CMake + Ninja + MSVC
 
-Le mode de fréquence par défaut est sans plafond logiciel. Le débit réellement affiché dépend de Windows, du GPU et de l’écran.
+The default frame pacing mode has no software FPS cap. Actual presentation speed depends on Windows, the GPU, and the monitor.
 
-## Lancer
+## Run
 
-Double-cliquez sur `build/release/ScreenFX.exe`. Gardez le dossier `shaders` à côté de l’exécutable : il contient les deux shaders compilés nécessaires au rendu. Aucun terminal ni CMake n’est nécessaire pour lancer la version déjà compilée.
+Double-click `build/release/ScreenFX.exe`. Keep the `shaders` folder next to the executable: it contains the two compiled shaders required for rendering. Launching an existing build does not require a terminal or CMake.
 
-Le panneau s’ouvre; cochez **Filtre actif**. Les effets sont neutres au premier lancement : augmentez **Scanlines** et **Masque phosphore RGB** pour obtenir l’aspect CRT. Le bouton **Enregistrer** conserve les réglages. La croix masque le panneau; **Ctrl+Alt+F11** ou un nouveau double-clic sur l’exécutable le ramène. Pour quitter, utilisez le menu de l’icône ScreenFX près de l’horloge.
+In the settings panel, check **Enable filter**. Effects start neutral on the first launch: increase **Scanlines** and **RGB phosphor mask** to create a CRT appearance. Use **Tint color** to choose a color and **Tint strength** to control how much it affects the picture. Choosing a color enables tint if its strength was zero. A strength of zero leaves the image color unchanged.
 
-Cible : Windows 10 version 2004 ou ultérieure, x64, GPU compatible Direct3D 11. Le rendu est SDR; le HDR et les jeux en plein écran exclusif ne sont pas validés. Les images de capture restent en mémoire GPU.
+Closing the panel hides it. Press **Ctrl+Alt+F11**, or double-click the executable again, to bring it back. To quit, use the ScreenFX tray icon menu near the clock.
 
-## Développement
+Target: Windows 10 version 2004 or later, x64, with a Direct3D 11 GPU. Rendering is SDR; HDR and exclusive full-screen games have not been validated. Captured frames remain in GPU memory during normal application use.
 
-Installez Visual Studio avec **Développement Desktop en C++**, les outils **CMake pour Windows** et le **SDK Windows**. Depuis un PowerShell ordinaire dans le dossier du projet :
+## Custom presets
+
+Adjust the effects, enter a preset name, then click **Save preset**. Choose a saved preset and click **Apply preset** to restore its effects. A preset includes all effect values, including the tint color and strength; it does not change the selected monitor, frame pacing, or whether the filter is enabled.
+
+Saving an existing name updates that preset. Names ignore letter case and can contain up to 80 characters; you can save up to 64 presets. **Save settings** separately saves the current application settings for the next launch.
+
+Presets are saved in `%LOCALAPPDATA%\ScreenFX\presets.json`. Only an explicit click on **Save preset** writes a custom preset. Moving sliders, applying a preset, stopping the filter, and closing the application do not save or overwrite presets.
+
+## Development
+
+Install Visual Studio with **Desktop development with C++**, **CMake tools for Windows**, and the **Windows SDK**. From a regular PowerShell in the project folder:
 
 ```powershell
 .\build.ps1
 ```
 
-Le script retrouve Visual Studio, configure et compile Release, puis exécute les tests. Pour Debug : `.\build.ps1 -Configuration Debug`. Il ne modifie pas le PATH de votre session.
+The script locates Visual Studio, configures and builds Release, then runs the tests. For Debug, use `.\build.ps1 -Configuration Debug`. It does not modify the PATH of your session.
 
-Depuis un terminal développeur Visual Studio, les commandes CMake directes restent disponibles :
+From a Visual Studio developer terminal, you can also run CMake directly:
 
 ```powershell
 cmake --preset windows-debug
@@ -39,34 +49,34 @@ cmake --build --preset windows-debug
 ctest --preset windows-debug --output-on-failure
 ```
 
-Le panneau ne télécharge aucune dépendance externe.
+The settings panel does not download any external dependencies.
 
-Pour produire un dossier installable :
+To produce an installation folder:
 
 ```powershell
 .\build.ps1 -Package
 ```
 
-Le programme installé et ses deux fichiers shader sont placés ensemble dans `dist/bin`. Le runtime C++ est lié statiquement.
+The installed application and its two shader files are placed together under `dist/bin`. The C++ runtime is linked statically.
 
-Pour tester la capture et la présentation dans votre session Windows :
+To test capture and presentation in your Windows session:
 
 ```powershell
 .\build\release\screenfx_graphics_tests.exe --desktop
 ```
 
-Ce test vérifie les pixels des shaders, trois redémarrages de capture, les deux modes de présentation et le redimensionnement. Une petite mire colorée vérifie ensuite l’affichage visible, le passage des clics et l’exclusion de capture. Elle disparaît automatiquement; aucune image n’est enregistrée. Ce test nécessite une session de bureau déverrouillée. Les tests CTest ordinaires n’affichent pas cette mire.
+This test checks shader pixels, three capture restarts, both presentation modes, and resizing. A small color pattern then checks visible rendering, click-through behavior, and capture exclusion. It closes automatically; no images are saved. This test requires an unlocked desktop session. Ordinary CTest runs do not display this pattern.
 
-## Dépannage
+## Troubleshooting
 
-La superposition reste masquée jusqu’à la première présentation réussie. Si aucune image n’est présentée en cinq secondes, ou si une erreur de capture/rendu survient, le filtre s’arrête et le panneau indique la cause. **Ctrl+Alt+F12** permet aussi de l’arrêter.
+The overlay stays hidden until the first successful presentation. If no frame is presented within five seconds, or a capture/rendering error occurs, the filter stops and the panel reports the cause. **Ctrl+Alt+F12** also stops the filter immediately.
 
-Si le panneau indique `0x80070424`, relancez l’application depuis votre session Windows interactive. Ce code a été observé dans le compte isolé des outils de test, alors que la capture fonctionne dans la session utilisateur; il ne justifie pas à lui seul de modifier les services Windows.
+If the panel reports `0x80070424`, launch the application from your interactive Windows session. This code was observed under the isolated test account while capture worked in the user session; the code alone is not a reason to change Windows services.
 
-Les réglages sont dans `%LOCALAPPDATA%\ScreenFX\settings.json`. Un fichier invalide ou d’une version inconnue est conservé, et sa sauvegarde est refusée avec un message. Pour repartir des valeurs initiales, quittez ScreenFX puis renommez ce fichier afin d’en garder une copie.
+Application settings are stored in `%LOCALAPPDATA%\ScreenFX\settings.json`. Invalid files and files with an unsupported version are preserved, and saving is refused with an error message. To restore default settings, quit ScreenFX and rename the file so you retain a backup.
 
-## Raccourcis
+## Shortcuts
 
-- `Ctrl+Alt+F10` : activer ou désactiver le filtre
-- `Ctrl+Alt+F11` : afficher le panneau
-- `Ctrl+Alt+F12` : arrêter immédiatement
+- `Ctrl+Alt+F10`: enable or disable the filter
+- `Ctrl+Alt+F11`: show the settings panel
+- `Ctrl+Alt+F12`: stop the filter immediately

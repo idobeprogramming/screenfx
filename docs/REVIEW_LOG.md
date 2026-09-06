@@ -64,3 +64,14 @@ Les premiers lots ci-dessous décrivent leurs vérifications historiques. Le tes
 - Added RGB tint and strength, with neutral defaults compatible with existing settings. Tint multiplies the processed image before the global effect blend; setting tint strength or global intensity to zero bypasses it.
 - Reviewed the CPU/HLSL constant layout and asserted its size and offsets. Pixel tests cover exact RGB channels, 50% strength and both bypass controls.
 - Validation: Debug and Release graphics tests passed, including the Release desktop test for visible presentation, capture exclusion, click-through hit testing, resizing and three capture restarts.
+
+## P31 — English interface, manual custom presets and color picker
+
+- Translated application labels, status/error messages, tray menu, README and build-script messages to English.
+- Added an editable preset name list with explicit **Save preset** and **Apply preset** actions. Saving a matching name updates it; applying copies only effect values. Selecting, typing, changing effects, applying and closing never write the custom preset file.
+- Added versioned `presets.json` storage beside `settings.json`, reusing bounded JSON validation and atomic file replacement. Names support Unicode and escaping; duplicates, invalid names, non-finite numbers and unsupported file versions are rejected without replacing existing data. Limits: 64 presets, 80 UTF-16 code units per name and 256 KiB per preset document.
+- Added the native color picker, a color swatch/hex label and tint-strength slider. The overlay is hidden during the modal dialog, then shown only after presentation resumes. Selecting a color activates tint if its strength was zero; cancellation preserves it.
+- Independent UI review found two minor issues, both fixed: keyboard order for the tint button and a README label mismatch. Root reviewed the storage implementation and integrated fixture tests after the storage sub-agent stopped progressing.
+- Validation: Debug and Release CTest 5/5. Tests cover saved preset Unicode/tint roundtrips, corruption/version protection, limits, failed replacement, explicit-only UI actions and tint synchronization. The panel/preset test timeouts allow 30 seconds because first launches in this test environment took about 20 seconds; subsequent Release tests all completed in 0.22 seconds total.
+- Interactive check: English panel layout and native color dialog verified; Ctrl+Alt+F12 stopped capture while the dialog was open, and cancelling returned to the stopped panel with the same color. Test presets were written only in temporary fixture folders, not the user's preset library.
+- Release package rebuilt in `build/release` and `dist/bin`, with both compiled shaders. The Debug instance used for UI checks was closed.
