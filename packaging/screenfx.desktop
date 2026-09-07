@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=ScreenFX
+Comment=Full-screen CRT effects for KDE Plasma and Hyprland
+Exec=screenfx
+Icon=preferences-desktop-display
+Terminal=false
+Categories=Settings;Utility;
+Keywords=CRT;shader;screen;filter;

@@ -10,8 +10,14 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 # Keep the executable portable with its shader folder, without a separate VC runtime install.
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 
-if(NOT WIN32)
-    message(FATAL_ERROR "ScreenFX v1 targets Windows only")
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    if(SCREENFX_BUILD_TESTS)
+        enable_testing()
+    endif()
+    add_subdirectory(src/linux)
+    return()
+elseif(NOT WIN32)
+    message(FATAL_ERROR "ScreenFX supports Windows and Linux (KDE Plasma or Hyprland)")
 endif()
 add_executable(screenfx WIN32
     src/main.cpp

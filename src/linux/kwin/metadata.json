@@ -1,0 +1,9 @@
+{
+  "KPlugin": {
+    "Name": "ScreenFX",
+    "Description": "Full-screen CRT effects controlled by ScreenFX",
+    "Category": "Appearance",
+    "EnabledByDefault": false,
+    "License": "GPL-2.0-or-later"
+  }
+}

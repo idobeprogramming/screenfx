@@ -25,6 +25,16 @@
         "CMAKE_BUILD_TYPE": "Release",
         "SCREENFX_BUILD_TESTS": "ON"
       }
+    },
+    {
+      "name": "linux-release",
+      "displayName": "ScreenFX Linux Release",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/linux-release",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "SCREENFX_BUILD_TESTS": "ON"
+      }
     }
   ],
   "buildPresets": [
@@ -35,6 +45,10 @@
     {
       "name": "windows-release",
       "configurePreset": "windows-release"
+    },
+    {
+      "name": "linux-release",
+      "configurePreset": "linux-release"
     }
   ],
   "testPresets": [
@@ -48,6 +62,13 @@
     {
       "name": "windows-release",
       "configurePreset": "windows-release",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "linux-release",
+      "configurePreset": "linux-release",
       "output": {
         "outputOnFailure": true
       }

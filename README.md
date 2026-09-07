@@ -1,6 +1,8 @@
 # ScreenFX
 
-ScreenFX is a Windows application that captures a monitor, applies GPU effects, and displays the result in a full-screen overlay. It targets the desktop and games running in windowed or borderless mode.
+ScreenFX applies CRT and color effects to your desktop. On Windows, it captures a monitor and displays a GPU-filtered overlay over the desktop and windowed or borderless games. On Linux, a Qt panel controls an effect inside KDE Plasma's KWin or Hyprland.
+
+Linux support is experimental. For dependencies, building, installation and validation limits, see [Linux setup](docs/LINUX.md). The Linux version requires a supported Wayland compositor; the Windows executable cannot provide that integration through Wine.
 
 ## Stack
 
@@ -13,7 +15,7 @@ ScreenFX is a Windows application that captures a monitor, applies GPU effects, 
 
 The default frame pacing mode has no software FPS cap. Actual presentation speed depends on Windows, the GPU, and the monitor.
 
-## Run
+## Run on Windows
 
 Double-click `build/release/ScreenFX.exe`. Keep the `shaders` folder next to the executable: it contains the two compiled shaders required for rendering. Launching an existing build does not require a terminal or CMake.
 
@@ -51,7 +53,7 @@ ctest --preset windows-debug --output-on-failure
 
 The settings panel does not download any external dependencies.
 
-The renderer reuses capture texture views and skips expensive shader work for disabled effects. Panel counters refresh up to four times per second; effect controls and error messages remain immediate. **Uncapped** keeps the existing presentation mode without an added FPS limit.
+The renderer reuses capture texture views and skips expensive shader work for disabled effects. Panel counters refresh up to four times per second; effect controls and error messages remain immediate. **Uncapped** keeps the existing presentation mode without an added FPS limit. **VSync** limits the presentation queue to one frame and waits before acquiring the latest captured image, reducing stale-frame queueing while keeping capture and controls responsive.
 
 For reproducible GPU measurements, run `.\build\release\screenfx_performance_tests.exe --benchmark` after building Release. See [performance results and methodology](docs/PERFORMANCE.md) for the tested gains and tradeoffs.
 
