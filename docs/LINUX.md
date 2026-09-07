@@ -102,7 +102,9 @@ The KDE module registers **Ctrl+Alt+F12** as its default stop shortcut. On Hyprl
 
 Click **Save settings** to save current effects. To save a custom preset, enter its name and click **Save preset**. **Apply preset** restores saved effect values. Saving an existing name updates its effects, ignoring letter case. Up to 64 presets are supported, with names up to 80 UTF-16 code units.
 
-Only these explicit save actions write their respective JSON files. Editing, applying, enabling, stopping and closing do not save settings or custom presets automatically.
+Choose a saved preset and click **Delete preset** to remove it from the library immediately. This keeps the current effects and application settings unchanged. Deleting the last preset leaves an empty library.
+
+Only explicit save or delete actions write their respective JSON files. Editing, applying, enabling, stopping and closing do not save settings or custom presets automatically.
 
 The default paths are `~/.config/screenfx/settings.json` and `~/.config/screenfx/presets.json`; `XDG_CONFIG_HOME` overrides the configuration root. The versioned preset schema and effect names match the Windows files. Invalid JSON, duplicate keys, unsupported versions, invalid values and unsafe file paths are rejected; existing invalid files are preserved. To recover from a damaged file, close ScreenFX and rename it as a backup before launching again.
 

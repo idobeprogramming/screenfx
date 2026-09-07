@@ -48,6 +48,8 @@ public:
     static PresetsLoadResult LoadPresets(const std::filesystem::path& path);
     static bool SavePresets(const std::vector<Preset>& presets, const std::filesystem::path& path,
                             std::wstring* error = nullptr);
+    static bool DeletePreset(const std::wstring& name, const std::filesystem::path& path,
+                             std::vector<Preset>& remainingPresets, std::wstring* error = nullptr);
 };
 
 } // namespace screenfx::core

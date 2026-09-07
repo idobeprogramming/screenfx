@@ -327,4 +327,26 @@ bool JsonStore::SavePreset(const QString& name, const core::EffectSettings& effe
     return WriteRoot(PresetsPath(), root, kPresetsLimit, error);
 }
 
+bool JsonStore::DeletePreset(const QString& name, QString& error) const {
+    error.clear();
+    if (!ValidName(name)) { return Fail(error, "Choose a saved preset to delete."); }
+    QJsonObject root;
+    bool exists = false;
+    if (!ReadRoot(PresetsPath(), kPresetsLimit, root, exists, error)) { return false; }
+    if (!exists) { return Fail(error, "The selected preset was not found."); }
+    QMap<QString, core::EffectSettings> previous;
+    if (!DecodePresets(root, previous, error)) { return false; }
+    auto presets = root.value(QStringLiteral("presets")).toArray();
+    const auto folded = name.toCaseFolded();
+    for (qsizetype index = 0; index < presets.size(); ++index) {
+        if (presets[index].toObject().value(QStringLiteral("name")).toString().toCaseFolded() == folded) {
+            presets.removeAt(index);
+            // Keep every remaining entry and its unknown metadata exactly as decoded.
+            root.insert(QStringLiteral("presets"), presets);
+            return WriteRoot(PresetsPath(), root, kPresetsLimit, error);
+        }
+    }
+    return Fail(error, "The selected preset was not found.");
+}
+
 } // namespace screenfx::linuxfx

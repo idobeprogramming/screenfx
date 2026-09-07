@@ -246,6 +246,7 @@ bool SettingsPanel::CreateControls() {
     };
     applyPreset_ = button(kApplyPreset, L"Apply preset");
     savePreset_ = button(kSavePreset, L"Save preset");
+    deletePreset_ = button(kDeletePreset, L"Delete preset");
     tintColor_ = button(kTintColor, L"Tint color: #FFFFFF");
     tintSwatch_ = CreateWindowExW(0, WC_STATICW, L"Tint preview", WS_CHILD | WS_VISIBLE | SS_OWNERDRAW,
         0, 0, 40, 24, window_, reinterpret_cast<HMENU>(kTintSwatch), module, nullptr);
@@ -315,7 +316,7 @@ bool SettingsPanel::CreateControls() {
         nullptr);
 
     const std::array ownedControls{enabled_, stop_, monitorCombo_, pacingCombo_, reset_, save_,
-        presetCombo_, applyPreset_, savePreset_, tintColor_, tintSwatch_};
+        presetCombo_, applyPreset_, savePreset_, deletePreset_, tintColor_, tintSwatch_};
     for (HWND control : ownedControls) {
         TrackControl(control);
         SetControlFont(control);
@@ -395,7 +396,7 @@ void SettingsPanel::Shutdown() {
     crtHeader_ = nullptr;
     imageHeader_ = nullptr;
     generalHeader_ = nullptr;
-    presetLabel_ = presetCombo_ = applyPreset_ = savePreset_ = tintColor_ = tintSwatch_ = nullptr;
+    presetLabel_ = presetCombo_ = applyPreset_ = savePreset_ = deletePreset_ = tintColor_ = tintSwatch_ = nullptr;
 }
 
 std::wstring SettingsPanel::PresetName() const {
@@ -413,6 +414,15 @@ void SettingsPanel::SetPresetNames(const std::vector<std::wstring>& names) {
     SendMessageW(presetCombo_, CB_RESETCONTENT, 0, 0);
     for (const auto& name : names) SendMessageW(presetCombo_, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(name.c_str()));
     SetWindowTextW(presetCombo_, currentName.c_str());
+    syncing_ = wasSyncing;
+}
+
+void SettingsPanel::ClearPresetName() {
+    if (!presetCombo_) return;
+    const bool wasSyncing = syncing_;
+    syncing_ = true;
+    SendMessageW(presetCombo_, CB_SETCURSEL, static_cast<WPARAM>(-1), 0);
+    SetWindowTextW(presetCombo_, L"");
     syncing_ = wasSyncing;
 }
 
@@ -594,8 +604,10 @@ void SettingsPanel::LayoutControls(int width, int height) {
     place(pacingCombo_, rightX + 154, 51, std::max(160, columnWidth - 154), 120);
     place(presetLabel_, kMargin, 92, 90, kControlHeight);
     place(presetCombo_, kMargin + 92, 89, comboWidth, 220);
-    place(applyPreset_, rightX, 88, 150, 28);
-    place(savePreset_, rightX + 162, 88, 150, 28);
+    const int presetButtonWidth = (columnWidth - 2 * 8) / 3;
+    place(applyPreset_, rightX, 88, presetButtonWidth, 28);
+    place(savePreset_, rightX + presetButtonWidth + 8, 88, presetButtonWidth, 28);
+    place(deletePreset_, rightX + 2 * (presetButtonWidth + 8), 88, presetButtonWidth, 28);
     place(status_, kMargin, 128, usableWidth, 42);
 
     place(colorsHeader_, kMargin, 174, columnWidth, kHeaderHeight);
@@ -724,10 +736,12 @@ bool SettingsPanel::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
         switch (id) {
         case kSavePreset:
         case kApplyPreset:
+        case kDeletePreset:
             if (code == BN_CLICKED) {
                 pendingActions_.presetName = PresetName();
                 pendingActions_.savePresetRequested = id == kSavePreset;
                 pendingActions_.applyPresetRequested = id == kApplyPreset;
+                pendingActions_.deletePresetRequested = id == kDeletePreset;
                 return true;
             }
             break;

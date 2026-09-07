@@ -32,14 +32,39 @@ int main(int argc, char** argv) {
         Check(Read(store.PresetsPath()) == savedPreset, "Applying a preset must not rewrite it");
         panel.findChild<QPushButton*>("saveSettings")->click();
         const auto savedSettings = Read(store.SettingsPath());
-        brightness->setValue(0.9); panel.Stop(); panel.close(); app.processEvents();
-        Check(Read(store.PresetsPath()) == savedPreset && Read(store.SettingsPath()) == savedSettings,
+        auto* deletePreset = panel.findChild<QPushButton*>("deletePreset");
+        auto* status = panel.findChild<QLabel*>("status");
+        Check(deletePreset && status, "Panel exposes the Delete preset button and feedback");
+        brightness->setValue(0.9);
+        preset->setEditText("Keep this preset"); panel.findChild<QPushButton*>("savePreset")->click();
+        preset->setEditText("MY GREEN CRT");
+        deletePreset->click();
+        QMap<QString, core::EffectSettings> remaining; QString error;
+        Check(store.LoadPresets(remaining, error) && remaining.size() == 1 && remaining.contains("Keep this preset"),
+              "Delete button removes the chosen preset and preserves other presets on disk");
+        Check(preset->count() == 1 && preset->currentIndex() == -1 && preset->currentText().isEmpty(),
+              "Delete refreshes the preset choices and clears the selection");
+        Check(status->text() == "Preset deleted." && std::abs(brightness->value() - 0.9) < 0.001 &&
+              !enabled->isChecked() && Read(store.SettingsPath()) == savedSettings,
+              "Delete reports success without changing effects, filter state or saved settings");
+        const auto afterDelete = Read(store.PresetsPath());
+        preset->setEditText("Missing"); deletePreset->click();
+        Check(!status->text().isEmpty() && status->text() != "Preset deleted." && preset->currentText() == "Missing" &&
+              Read(store.PresetsPath()) == afterDelete && std::abs(brightness->value() - 0.9) < 0.001,
+              "Failed deletion displays an error and preserves the selection, library and effects");
+        preset->setEditText("Keep this preset"); deletePreset->click();
+        Check(store.LoadPresets(remaining, error) && remaining.isEmpty() && preset->count() == 0 && preset->currentText().isEmpty(),
+              "Delete the last preset through the actual button");
+        const auto emptyLibrary = Read(store.PresetsPath());
+        panel.Stop(); panel.close(); app.processEvents();
+        Check(Read(store.PresetsPath()) == emptyLibrary && Read(store.SettingsPath()) == savedSettings,
               "Changing, stopping and closing must not persist unsaved edits");
         Panel reopened("kde");
         Check(std::abs(reopened.findChild<QDoubleSpinBox*>("brightness")->value() - 0.35) < 0.001,
               "Next launch loads explicitly saved settings");
         Check(!reopened.findChild<QCheckBox*>("enabled")->isChecked(), "Saved settings must not enable the filter at launch");
-        std::cout << "PASS: real Qt controls, explicit settings/preset saves, apply, stop, close and reopen\n";
+        Check(reopened.findChild<QComboBox*>("presetName")->count() == 0, "Deleted presets stay deleted after reopening the panel");
+        std::cout << "PASS: real Qt controls, explicit settings/preset saves and deletion, apply, stop, close and reopen\n";
         return 0;
     } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
 }

@@ -6,6 +6,10 @@
 
 namespace screenfx::ui {
 struct SettingsPanelTestAccess {
+    static void LayoutMinimumWidth(SettingsPanel& panel) {
+        panel.LayoutControls(MulDiv(900, panel.dpi_, 96), MulDiv(940, panel.dpi_, 96));
+    }
+    static int MinimumWidth(const SettingsPanel& panel) { return MulDiv(900, panel.dpi_, 96); }
     static std::array<HWND, 5> Stats(const SettingsPanel& panel) {
         return {panel.capturedStats_, panel.presentedStats_, panel.droppedStats_, panel.status_, panel.captureState_};
     }
@@ -167,6 +171,46 @@ void TestVisibility(ui::SettingsPanel& panel, HWND window, core::AppSettings& se
     panel.Render(settings, {}, true, 1200, 0, 1199, L"Restored status");
     Check(Text(controls[0]) == L"Captured frames: 1200" && Text(controls[3]) == L"Restored status", "Restoring the panel refreshes current statistics");
 }
+void TestDeletePreset(ui::SettingsPanel& panel, HWND window, const core::AppSettings& settings) {
+    const HWND combo = GetDlgItem(window, 1007);
+    const HWND deleteButton = GetDlgItem(window, 1012);
+    Check(deleteButton && Text(deleteButton) == L"Delete preset", "English Delete preset button exists");
+    panel.SetPresetNames({L"Amber", L"  Green CRT  "});
+    SendMessageW(combo, CB_SETCURSEL, 1, 0);
+    panel.HandleMessage(WM_COMMAND, MAKEWPARAM(1007, CBN_SELCHANGE), reinterpret_cast<LPARAM>(combo));
+    Check(!panel.TakeActions().deletePresetRequested, "Selecting a preset must not request deletion");
+    panel.HandleMessage(WM_COMMAND, MAKEWPARAM(1012, BN_SETFOCUS), reinterpret_cast<LPARAM>(deleteButton));
+    Check(!panel.TakeActions().deletePresetRequested, "Focusing Delete preset must not request deletion");
+    const auto previousTint = settings.effects.tintIntensity;
+    panel.HandleMessage(WM_COMMAND, MAKEWPARAM(1012, BN_CLICKED), reinterpret_cast<LPARAM>(deleteButton));
+    auto actions = panel.TakeActions();
+    Check(actions.deletePresetRequested && actions.presetName == L"  Green CRT  " &&
+          !actions.applyPresetRequested && !actions.savePresetRequested && !actions.settingsChanged && !actions.saveRequested &&
+          settings.effects.tintIntensity == previousTint, "Delete submits exact name without changing or saving active settings");
+    Check(!panel.TakeActions().deletePresetRequested, "Delete request is consumed once");
+    Check(Text(combo) == L"  Green CRT  " && SendMessageW(combo, CB_GETCOUNT, 0, 0) == 2,
+          "Deletion request preserves name and library until persistence succeeds");
+    panel.SetPresetNames({L"Amber"});
+    panel.ClearPresetName();
+    Check(Text(combo).empty() && SendMessageW(combo, CB_GETCURSEL, 0, 0) == CB_ERR && SendMessageW(combo, CB_GETCOUNT, 0, 0) == 1,
+          "Successful deletion clears text and selection without selecting another preset");
+    actions = panel.TakeActions();
+    Check(!actions.deletePresetRequested && !actions.savePresetRequested && !actions.applyPresetRequested && !actions.settingsChanged,
+          "Refresh after deletion does not trigger another action");
+    SetWindowTextW(combo, L"Typed preset");
+    panel.ClearPresetName();
+    Check(Text(combo).empty(), "Clear preset clears editable text without a selected item");
+    ui::SettingsPanelTestAccess::LayoutMinimumWidth(panel);
+    RECT previous{};
+    for (int id : {1008, 1009, 1012}) {
+        RECT bounds{};
+        Check(GetWindowRect(GetDlgItem(window, id), &bounds) != FALSE, "Read preset button position");
+        MapWindowPoints(nullptr, window, reinterpret_cast<POINT*>(&bounds), 2);
+        Check(bounds.left >= previous.right && bounds.right <= ui::SettingsPanelTestAccess::MinimumWidth(panel),
+              "Three preset actions fit without overlap at minimum panel width");
+        previous = bounds;
+    }
+}
 }
 int main() {
     try {
@@ -184,7 +228,8 @@ int main() {
         SetWindowTextW(combo, L"My custom preset");
         panel.HandleMessage(WM_COMMAND, MAKEWPARAM(1007, CBN_EDITCHANGE), reinterpret_cast<LPARAM>(combo));
         auto actions = panel.TakeActions();
-        Check(!actions.savePresetRequested && !actions.applyPresetRequested, "Typing must not save or apply a preset");
+        Check(!actions.savePresetRequested && !actions.applyPresetRequested && !actions.deletePresetRequested,
+              "Typing must not save, apply or delete a preset");
         panel.SetPresetNames({L"Amber", L"Green CRT", L"New entry"});
         Check(Text(combo) == L"My custom preset", "Refreshing list must preserve typed name");
         panel.HandleMessage(WM_COMMAND, MAKEWPARAM(1009, BN_CLICKED), reinterpret_cast<LPARAM>(GetDlgItem(window.handle, 1009)));
@@ -214,6 +259,7 @@ int main() {
         Check(Text(GetDlgItem(window.handle, 1010)) == L"Tint color: #FF8000", "Applied tint refreshes picker hex label");
         Check(SendMessageW(strength, TBM_GETPOS, 0, 0) == 800, "Applied preset refreshes tint strength");
         Check(Text(GetDlgItem(window.handle, 1009)) == L"Save preset", "English preset action label");
+        TestDeletePreset(panel, window.handle, settings);
         TestControlCaching(panel, window.handle, settings);
         TestVisibility(panel, window.handle, settings);
         std::cout << "PASS: explicit preset actions, tint/control caching, throttled statistics, immediate errors, hidden/minimized refresh\n";

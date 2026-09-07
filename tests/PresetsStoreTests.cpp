@@ -23,9 +23,72 @@ struct Fixture {
     Fixture() { Check(std::filesystem::create_directory(folder), "Fixture directory already exists"); }
     ~Fixture() { std::error_code error; std::filesystem::remove_all(folder, error); }
 };
+void TestDeletePreset() {
+    Fixture fixture;
+    const auto path = fixture.folder / L"presets.json";
+    const auto settingsPath = fixture.folder / L"settings.json";
+    std::vector<Preset> remaining{{L"Unchanged UI library", {}}};
+    std::wstring error;
+    const auto unchangedOutput = [&] { return remaining.size() == 1 && remaining.front().name == L"Unchanged UI library"; };
+    Check(!SettingsStore::DeletePreset(L"CRT", path, remaining, &error) && !error.empty() &&
+          !std::filesystem::exists(path) && unchangedOutput(), "Missing library deletion preserves disk and UI");
+    AppSettings settings;
+    settings.effects.tintIntensity = 0.75F;
+    Check(SettingsStore::Save(settings, settingsPath), "Write independent active settings fixture");
+    const auto settingsDocument = Read(settingsPath);
+    const std::string first = R"({"name":"CRT","effects":{}})";
+    const std::string spaced = R"({"name":"  CRT  ","effects":{},"metadata":[null,false,true,"escaped\\value\""]})";
+    const std::string other = R"({"name":"External preset","effects":{"gamma":1.31234,"tintBlue":0.25,"futureField":1234567890123456789},"note":"keep me"})";
+    const std::string prefix = R"({"version":1,"rootMetadata":{"keep":true,"precise":1234567890123456789},"presets":[)";
+    const std::string suffix = R"(],"tail":[{},[],null]})";
+    const auto original = prefix + first + ",\n  " + spaced + ",\n  " + other + suffix;
+    Write(path, original);
+    for (const auto& name : {L"", L"   ", L"bad\nname", L"Unknown", L"CR"}) {
+        Check(!SettingsStore::DeletePreset(name, path, remaining, &error) && !error.empty() &&
+              Read(path) == original && unchangedOutput(), "Invalid and unmatched names preserve file and UI");
+    }
+    Check(SettingsStore::DeletePreset(L"cRt", path, remaining, &error) && error.empty() && remaining.size() == 2 &&
+          remaining[0].name == L"  CRT  " && remaining[1].name == L"External preset" &&
+          remaining[1].effects.gamma == 1.31234F && remaining[1].effects.tintBlue == 0.25F,
+          "Delete case-insensitive exact name using current disk library");
+    Check(Read(path) == prefix + spaced + ",\n  " + other + suffix,
+          "Deleting first entry preserves all unrelated JSON metadata, precision and formatting");
+    Check(SettingsStore::LoadPresets(path).presets.size() == 2, "Deleted preset stays deleted after reload");
+    Check(SettingsStore::DeletePreset(L"  crt  ", path, remaining, &error) && remaining.size() == 1,
+          "Stored names with leading and trailing spaces can be deleted exactly");
+    Check(SettingsStore::DeletePreset(L"External preset", path, remaining, &error) && remaining.empty() &&
+          SettingsStore::LoadPresets(path).status == SettingsLoadStatus::Loaded &&
+          Read(path) == prefix + suffix, "Last deletion leaves a valid empty library and preserves root metadata");
+    remaining = {{L"Unchanged UI library", {}}};
+    const auto emptyLibrary = Read(path);
+    Check(!SettingsStore::DeletePreset(L"CRT", path, remaining, &error) && !error.empty() &&
+          Read(path) == emptyLibrary && unchangedOutput(), "Repeated deletion preserves empty library");
+    Write(path, original);
+    Check(SettingsStore::DeletePreset(L"  CRT  ", path, remaining, &error) &&
+          Read(path) == prefix + first + ",\n  " + other + suffix, "Middle deletion removes exactly its entry and comma");
+    Check(SettingsStore::DeletePreset(L"External preset", path, remaining, &error) &&
+          Read(path) == prefix + first + suffix, "Last array entry deletion removes its preceding comma");
+    remaining = {{L"Unchanged UI library", {}}};
+    for (const auto& document : {std::string{}, std::string{"broken json"}, std::string{"{\"version\":2,\"presets\":[]}"}}) {
+        Write(path, document);
+        Check(!SettingsStore::DeletePreset(L"CRT", path, remaining, &error) && !error.empty() &&
+              Read(path) == document && unchangedOutput(), "Deletion preserves blank, corrupt and future-format files");
+    }
+    Write(path, original);
+    Check(SetFileAttributesW(path.c_str(), FILE_ATTRIBUTE_READONLY) != FALSE, "Read-only deletion fixture");
+    const bool deleted = SettingsStore::DeletePreset(L"CRT", path, remaining, &error);
+    SetFileAttributesW(path.c_str(), FILE_ATTRIBUTE_NORMAL);
+    Check(!deleted && !error.empty() && Read(path) == original && unchangedOutput(), "Failed atomic deletion preserves file and UI");
+    Check(!SettingsStore::DeletePreset(L"CRT", fixture.folder, remaining, &error) && !error.empty() && unchangedOutput(),
+          "Deletion rejects invalid storage paths");
+    Check(Read(settingsPath) == settingsDocument, "Deleting presets does not save or modify active settings");
+    Check(std::distance(std::filesystem::directory_iterator(fixture.folder), std::filesystem::directory_iterator{}) == 2,
+          "Deletion does not leak temporary files");
+}
 }
 int main() {
     try {
+        TestDeletePreset();
         Fixture fixture;
         const auto path = fixture.folder / L"presets.json";
         Check(SettingsStore::LoadPresets(path).status == SettingsLoadStatus::NotFound && !std::filesystem::exists(path),
@@ -94,7 +157,7 @@ int main() {
               "Invalid preset storage path");
         Check(std::distance(std::filesystem::directory_iterator(fixture.folder), std::filesystem::directory_iterator{}) == 1,
               "No temporary files leaked");
-        std::cout << "PASS: custom preset JSON, Unicode, tint, bounds, corruption/version preservation, atomic save failures\n";
+        std::cout << "PASS: custom preset JSON, explicit deletion, metadata preservation, Unicode, tint, bounds, atomic save/delete failures\n";
         return 0;
     } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
 }

@@ -31,7 +31,9 @@ Adjust the effects, enter a preset name, then click **Save preset**. Choose a sa
 
 Saving an existing name updates that preset. Names ignore letter case and can contain up to 80 characters; you can save up to 64 presets. **Save settings** separately saves the current application settings for the next launch.
 
-Presets are saved in `%LOCALAPPDATA%\ScreenFX\presets.json`. Only an explicit click on **Save preset** writes a custom preset. Moving sliders, applying a preset, stopping the filter, and closing the application do not save or overwrite presets.
+Choose a saved preset and click **Delete preset** to remove it from `presets.json`. The current effect values stay as they are. Deletion is saved immediately; it does not require **Save settings**.
+
+Presets are saved in `%LOCALAPPDATA%\ScreenFX\presets.json`. **Save preset** and **Delete preset** explicitly update this library. Moving sliders, applying a preset, stopping the filter, and closing the application do not save or overwrite presets.
 
 ## Development
 

@@ -64,6 +64,7 @@ private:
     void RefreshPresetNames();
     void SavePreset(std::wstring name);
     void ApplyPreset(std::wstring name);
+    void DeletePreset(const std::wstring& name);
     void PickTintColor();
 
     HINSTANCE instance_ = nullptr;

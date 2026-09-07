@@ -7,7 +7,7 @@
 
 namespace screenfx::linuxfx {
 
-// Only the explicit Save methods write files. Failed loads leave their outputs unchanged.
+// Only explicit Save and Delete methods write files. Failed loads leave their outputs unchanged.
 class JsonStore {
 public:
     explicit JsonStore(QString directory = {});
@@ -20,6 +20,7 @@ public:
     bool SaveEffects(const core::EffectSettings& effects, QString& error) const;
     bool LoadPresets(QMap<QString, core::EffectSettings>& presets, QString& error) const;
     bool SavePreset(const QString& name, const core::EffectSettings& effects, QString& error) const;
+    bool DeletePreset(const QString& name, QString& error) const;
 
 private:
     QString directory_;

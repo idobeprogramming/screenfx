@@ -23,6 +23,7 @@ struct PanelActions {
     bool pacingChanged = false;
     bool savePresetRequested = false;
     bool applyPresetRequested = false;
+    bool deletePresetRequested = false;
     bool pickColorRequested = false;
     std::wstring presetName;
 };
@@ -41,6 +42,7 @@ public:
     PanelActions TakeActions();
     void EnsureFocusVisible();
     void SetPresetNames(const std::vector<std::wstring>& names);
+    void ClearPresetName();
     void Render(
         core::AppSettings& settings,
         const std::vector<platform::MonitorInfo>& monitors,
@@ -64,6 +66,7 @@ private:
         kSavePreset = 1009,
         kTintColor = 1010,
         kTintSwatch = 1011,
+        kDeletePreset = 1012,
         kBrightness = 1101,
         kContrast = 1102,
         kSaturation = 1103,
@@ -142,6 +145,7 @@ private:
     HWND presetCombo_ = nullptr;
     HWND applyPreset_ = nullptr;
     HWND savePreset_ = nullptr;
+    HWND deletePreset_ = nullptr;
     HWND tintColor_ = nullptr;
     HWND tintSwatch_ = nullptr;
     COLORREF tintColorValue_ = RGB(255, 255, 255);

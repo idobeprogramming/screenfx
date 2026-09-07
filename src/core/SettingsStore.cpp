@@ -67,6 +67,8 @@ struct JsonValue {
     std::string text;
     std::map<std::string, JsonValue, std::less<>> members;
     std::vector<JsonValue> elements;
+    std::size_t begin = 0;
+    std::size_t end = 0;
 
     const JsonValue* Find(std::string_view key) const {
         const auto found = members.find(key);
@@ -176,10 +178,11 @@ private:
         Require(depth <= kMaximumDepth);
         Whitespace();
         JsonValue result;
+        result.begin = position_;
         if (Take('{')) {
             result.kind = JsonValue::Kind::Object;
             Whitespace();
-            if (Take('}')) { return result; }
+            if (Take('}')) { result.end = position_; return result; }
             do {
                 Whitespace();
                 std::string key = String();
@@ -188,17 +191,17 @@ private:
                 JsonValue child = Value(depth + 1);
                 Require(result.members.emplace(std::move(key), std::move(child)).second);
                 Whitespace();
-                if (Take('}')) { return result; }
+                if (Take('}')) { result.end = position_; return result; }
             } while (Take(','));
             Require(false);
         } else if (Take('[')) {
             result.kind = JsonValue::Kind::Array;
             Whitespace();
-            if (Take(']')) { return result; }
+            if (Take(']')) { result.end = position_; return result; }
             do {
                 result.elements.push_back(Value(depth + 1));
                 Whitespace();
-                if (Take(']')) { return result; }
+                if (Take(']')) { result.end = position_; return result; }
             } while (Take(','));
             Require(false);
         } else if (Peek() == '"') {
@@ -229,6 +232,7 @@ private:
             }
             result.text = document_.substr(start, position_ - start);
         }
+        result.end = position_;
         return result;
     }
 
@@ -485,11 +489,10 @@ void WriteString(std::ostream& document, const std::wstring& text) {
     document << '"';
 }
 
-PresetsLoadResult PresetsFromJson(const std::string& document) {
+PresetsLoadResult PresetsFromValue(const JsonValue& root) {
     PresetsLoadResult result;
     result.status = SettingsLoadStatus::Invalid;
     result.error = L"The presets file is invalid. It has been preserved.";
-    const JsonValue root = JsonParser(document).Parse();
     if (root.kind != JsonValue::Kind::Object) { return result; }
     const JsonValue* version = root.Find("version");
     std::uint32_t parsedVersion = 0;
@@ -519,6 +522,10 @@ PresetsLoadResult PresetsFromJson(const std::string& document) {
     result.status = SettingsLoadStatus::Loaded;
     result.error.clear();
     return result;
+}
+
+PresetsLoadResult PresetsFromJson(const std::string& document) {
+    return PresetsFromValue(JsonParser(document).Parse());
 }
 
 std::string PresetsToJson(const std::vector<Preset>& presets) {
@@ -646,6 +653,43 @@ bool SettingsStore::SavePresets(const std::vector<Preset>& presets, const std::f
         return WriteDocument(path, document, error);
     } catch (...) {
         return fail(L"Presets could not be saved.");
+    }
+}
+
+bool SettingsStore::DeletePreset(const std::wstring& name, const std::filesystem::path& path,
+                                 std::vector<Preset>& remainingPresets, std::wstring* error) {
+    if (error != nullptr) { error->clear(); }
+    const auto fail = [error](std::wstring message) {
+        if (error != nullptr) { *error = std::move(message); }
+        return false;
+    };
+    try {
+        if (!ValidPresetName(name)) { return fail(L"Choose a saved preset, then click Delete preset."); }
+        // Work from the current library so presets saved or edited elsewhere are retained.
+        auto document = ReadDocument(path, kMaximumPresetsDocumentBytes);
+        if (document.status == SettingsLoadStatus::NotFound) { return fail(L"The presets file does not exist."); }
+        if (document.status != SettingsLoadStatus::Loaded) { return fail(document.error); }
+        const auto root = JsonParser(document.document).Parse();
+        auto current = PresetsFromValue(root);
+        if (current.status != SettingsLoadStatus::Loaded) { return fail(current.error); }
+        const auto found = std::find_if(current.presets.begin(), current.presets.end(), [&name](const Preset& preset) {
+            return CompareStringOrdinal(name.data(), static_cast<int>(name.size()), preset.name.data(),
+                                        static_cast<int>(preset.name.size()), TRUE) == CSTR_EQUAL;
+        });
+        if (found == current.presets.end()) { return fail(L"No saved preset matches this name."); }
+        const auto index = static_cast<std::size_t>(found - current.presets.begin());
+        const auto& entries = root.Find("presets")->elements;
+        // Remove only this entry and its adjacent comma. Keep unknown metadata,
+        // original numeric precision, and every surviving preset's JSON intact.
+        const auto begin = index > 0 ? entries[index - 1].end : entries[index].begin;
+        const auto end = index == 0 && entries.size() > 1 ? entries[1].begin : entries[index].end;
+        document.document.erase(begin, end - begin);
+        current.presets.erase(found);
+        if (!WriteDocument(path, document.document, error)) { return false; }
+        remainingPresets = std::move(current.presets);
+        return true;
+    } catch (...) {
+        return fail(L"The preset could not be deleted.");
     }
 }
 

@@ -474,6 +474,7 @@ void Win32App::ProcessPanelActions() {
     if (actions.pickColorRequested) PickTintColor();
     if (actions.applyPresetRequested) ApplyPreset(actions.presetName);
     if (actions.savePresetRequested) SavePreset(actions.presetName);
+    if (actions.deletePresetRequested) DeletePreset(actions.presetName);
     if (actions.settingsChanged) {
         renderRequested_ = true;
     }
@@ -524,6 +525,19 @@ void Win32App::SavePreset(std::wstring name) {
     presets_ = std::move(current.presets);
     RefreshPresetNames();
     UpdateStatus((updating ? L"Preset updated: " : L"Preset saved: ") + name);
+}
+
+void Win32App::DeletePreset(const std::wstring& name) {
+    std::vector<core::Preset> remainingPresets;
+    std::wstring error;
+    if (!core::SettingsStore::DeletePreset(name, core::SettingsStore::PresetsPath(), remainingPresets, &error)) {
+        UpdateStatus(L"Preset not deleted — " + error);
+        return;
+    }
+    presets_ = std::move(remainingPresets);
+    RefreshPresetNames();
+    panel_.ClearPresetName();
+    UpdateStatus(L"Preset deleted: " + name);
 }
 
 void Win32App::ApplyPreset(std::wstring name) {

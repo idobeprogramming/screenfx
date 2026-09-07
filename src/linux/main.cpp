@@ -61,7 +61,8 @@ public:
         presetName_ = new QComboBox; presetName_->setEditable(true); presetName_->setObjectName("presetName");
         presetName_->setPlaceholderText("Custom preset name"); presets->addWidget(presetName_, 1);
         auto* applyPreset = new QPushButton("Apply preset"); applyPreset->setObjectName("applyPreset"); presets->addWidget(applyPreset);
-        auto* savePreset = new QPushButton("Save preset"); savePreset->setObjectName("savePreset"); presets->addWidget(savePreset); layout->addLayout(presets);
+        auto* savePreset = new QPushButton("Save preset"); savePreset->setObjectName("savePreset"); presets->addWidget(savePreset);
+        auto* deletePreset = new QPushButton("Delete preset"); deletePreset->setObjectName("deletePreset"); presets->addWidget(deletePreset); layout->addLayout(presets);
         tint_ = new QPushButton("Tint color"); tint_->setObjectName("tintColor"); layout->addWidget(tint_);
         auto* scroll = new QScrollArea; scroll->setWidgetResizable(true);
         auto* formWidget = new QWidget; auto* form = new QFormLayout(formWidget);
@@ -100,6 +101,13 @@ public:
             RefreshPresets(); presetName_->setEditText(name); status_->setText("Preset saved.");
         });
         connect(applyPreset, &QPushButton::clicked, this, [this] { SelectPreset(presetName_->currentText()); });
+        connect(deletePreset, &QPushButton::clicked, this, [this] {
+            QString error;
+            if (!store_.DeletePreset(presetName_->currentText(), error)) { status_->setText(error); return; }
+            if (!RefreshPresets()) return;
+            presetName_->setCurrentIndex(-1); presetName_->clearEditText();
+            status_->setText("Preset deleted.");
+        });
         connect(tint_, &QPushButton::clicked, this, [this] {
             const auto color = QColorDialog::getColor(QColor::fromRgbF(effects_.tintRed, effects_.tintGreen, effects_.tintBlue), this, "Tint color");
             if (!color.isValid()) return;
@@ -142,10 +150,11 @@ private:
         if (!backend_.Apply(effects_, error)) { QSignalBlocker blocker(enabled_); enabled_->setChecked(backend_.Active()); status_->setText(error); }
         else status_->setText("Filter enabled — " + backend_.Name() + ".");
     }
-    void RefreshPresets() {
-        QString error; if (!store_.LoadPresets(presets_, error)) { status_->setText(error); return; }
+    bool RefreshPresets() {
+        QString error; if (!store_.LoadPresets(presets_, error)) { status_->setText(error); return false; }
         const QString text = presetName_->currentText(); QSignalBlocker blocker(presetName_);
         presetName_->clear(); presetName_->addItems(presets_.keys()); presetName_->setEditText(text);
+        return true;
     }
     void Sync() {
         for (const auto& control : controls_) {
