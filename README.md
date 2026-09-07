@@ -4,6 +4,10 @@ ScreenFX applies CRT and color effects to your desktop. On Windows, it captures 
 
 Linux support is experimental. For dependencies, building, installation and validation limits, see [Linux setup](docs/LINUX.md). The Linux version requires a supported Wayland compositor; the Windows executable cannot provide that integration through Wine.
 
+> **Photosensitivity and seizure warning**
+>
+> ScreenFX can add flicker, scanlines, moving grain, color shifts and high-contrast patterns. These effects may trigger seizures or other symptoms in people with photosensitive epilepsy. Stop using the application immediately if you feel unwell and seek medical advice. Start with low effect values, keep ambient lighting on, and follow any medical advice you have received about flashing or flickering visuals.
+
 ## Stack
 
 - C++20, Win32, and C++/WinRT
@@ -35,7 +39,9 @@ Choose a saved preset and click **Delete preset** to remove it from `presets.jso
 
 Presets are saved in `%LOCALAPPDATA%\ScreenFX\presets.json`. **Save preset** and **Delete preset** explicitly update this library. Moving sliders, applying a preset, stopping the filter, and closing the application do not save or overwrite presets.
 
-## Development
+## Build from source
+
+### Windows
 
 Install Visual Studio with **Desktop development with C++**, **CMake tools for Windows**, and the **Windows SDK**. From a regular PowerShell in the project folder:
 
@@ -54,6 +60,24 @@ ctest --preset windows-debug --output-on-failure
 ```
 
 The settings panel does not download any external dependencies.
+
+### Linux (KDE Plasma or Hyprland)
+
+Install a C++20 compiler, CMake 3.26 or later, Ninja, and the Qt 6 Core, Gui, Widgets, DBus and OpenGL development packages. KDE builds also need KWin 6.6 development files, Extra CMake Modules and KF6 GlobalAccel. The tested Ubuntu package list and the KWin plugin installation steps are in [Linux setup](docs/LINUX.md).
+
+From a terminal in the project folder:
+
+```sh
+sh build.sh
+```
+
+This configures a Release build, compiles the application and KWin module, and runs the Linux tests. The application is written to `build/linux-release/screenfx`. For a Hyprland-only build without KWin development packages, use:
+
+```sh
+sh build.sh -DSCREENFX_BUILD_KWIN=OFF
+```
+
+Run the Linux panel inside your desktop session with `./build/linux-release/screenfx`. Install and configure the KWin plugin before enabling the filter; see [Linux setup](docs/LINUX.md) for the required plugin path and the matching-KWin-version rule.
 
 The renderer reuses capture texture views and skips expensive shader work for disabled effects. Panel counters refresh up to four times per second; effect controls and error messages remain immediate. **Uncapped** keeps the existing presentation mode without an added FPS limit. **VSync** limits the presentation queue to one frame and waits before acquiring the latest captured image, reducing stale-frame queueing while keeping capture and controls responsive.
 

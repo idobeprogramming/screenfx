@@ -117,3 +117,8 @@ Les premiers lots ci-dessous décrivent leurs vérifications historiques. Le tes
 - Deletion matches preset names ignoring letter case and validates the current on-disk library before atomically replacing it. Missing names, invalid or unsupported JSON and failed writes report an error without removing a preset from the panel. Deleting the last preset leaves a valid empty library.
 - Separate sub-agents implemented Windows and Linux; root and an independent sub-agent reviewed the integration. Root's review requested preservation of unrelated JSON fields on Windows: deletion now removes the selected entry's validated byte span instead of serializing every preset again. Linux preserves the remaining JSON objects and metadata. The final independent review reported no actionable findings.
 - Validation: Windows Release CTest 6/6 and Linux Release CTest 4/4 passed. Regression tests cover exact case-insensitive matching, first/middle/last/only deletion, metadata preservation, missing/corrupt/future files, failed atomic writes, explicit button actions, selection clearing, unchanged effects/settings and minimum Windows panel width. The Windows executable was rebuilt and installed in `dist/bin`.
+
+## P37 — Document source builds and photosensitivity warning
+
+- Expanded the README with Windows and Linux build commands, prerequisites, resulting artifact paths and a link to the full Linux installation guide. The existing Windows build script and Linux `build.sh` remain the canonical entry points.
+- Added an English photosensitivity and seizure warning covering flicker, scanlines, animated grain, color shifts and high-contrast patterns, with instructions to stop if symptoms occur and start with low effect values.
