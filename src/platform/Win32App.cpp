@@ -360,6 +360,13 @@ void Win32App::RenderAvailableFrame() {
         FailCapture(L"No frame was presented within 5 seconds. Check that Windows capture is available, then enable the filter again.");
         return;
     }
+    // Wait before taking a capture lease so the callback can keep replacing
+    // pending frames with newer ones while the monitor is not ready.
+    if (!renderer_.ReadyToRender(settings_.framePacing)) {
+        if (renderer_.LastError() != DXGI_ERROR_WAS_STILL_DRAWING)
+            FailCapture(RenderError(renderer_.LastError()));
+        return;
+    }
     graphics::CapturedFrame newFrame;
     if (capture_.TryAcquireLatest(newFrame)) {
         latestFrame_ = std::move(newFrame);
@@ -378,7 +385,7 @@ void Win32App::RenderAvailableFrame() {
             firstFrameDeadline_ = 0;
             UpdateStatus(L"Filter enabled — capturing.");
         }
-    } else {
+    } else if (renderer_.LastError() != DXGI_ERROR_WAS_STILL_DRAWING) {
         FailCapture(RenderError(renderer_.LastError()));
     }
 }
@@ -708,14 +715,30 @@ int Win32App::Run() {
 
         // Actions may have enabled capture during this iteration. Select the
         // wait source only now so that its first frame cannot be lost.
-        HANDLE event = enabled_ && graphicsInitialized_ ? capture_.FrameEvent() : nullptr;
+        std::array<HANDLE, 2> events{};
+        DWORD eventCount = 0;
+        DWORD latencyIndex = MAXDWORD;
+        if (enabled_ && graphicsInitialized_) {
+            // Put readiness first when both events signal. The captured frame
+            // is selected after waking, never retained across the VSync wait.
+            if (settings_.framePacing == core::FramePacingMode::VSync) {
+                if (HANDLE ready = renderer_.FrameLatencyEvent()) {
+                    latencyIndex = eventCount;
+                    events[eventCount++] = ready;
+                }
+            }
+            if (HANDLE captured = capture_.FrameEvent()) events[eventCount++] = captured;
+        }
         DWORD timeout = INFINITE;
         if (firstFrameDeadline_ != 0) {
             const ULONGLONG now = GetTickCount64();
             timeout = now >= firstFrameDeadline_ ? 0 : static_cast<DWORD>(firstFrameDeadline_ - now);
         }
-        if (MsgWaitForMultipleObjectsEx(event != nullptr ? 1 : 0, event != nullptr ? &event : nullptr,
-                                      timeout, QS_ALLINPUT, MWMO_INPUTAVAILABLE) == WAIT_FAILED) {
+        const DWORD waitResult = MsgWaitForMultipleObjectsEx(eventCount, events.data(),
+                                      timeout, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
+        if (latencyIndex != MAXDWORD && waitResult == WAIT_OBJECT_0 + latencyIndex)
+            renderer_.NotifyFrameLatencyReady();
+        if (waitResult == WAIT_FAILED) {
             if (enabled_) {
                 FailCapture(L"Could not wait for captured frames.");
                 RenderPanel();

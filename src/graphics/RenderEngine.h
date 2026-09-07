@@ -16,12 +16,21 @@ namespace screenfx::graphics {
 class RenderEngine {
 public:
     explicit RenderEngine(D3D11Context& graphics);
+    ~RenderEngine();
+    RenderEngine(const RenderEngine&) = delete;
+    RenderEngine& operator=(const RenderEngine&) = delete;
 
     bool Initialize(HWND outputWindow, const RECT& bounds);
     void Shutdown();
     bool Render(const CapturedFrame& frame, const core::EffectSettings& effects, core::FramePacingMode framePacing);
     bool Resize(const RECT& bounds);
     HRESULT LastError() const noexcept { return lastError_; }
+
+    // Poll before acquiring the newest capture. The message loop can wait on
+    // the returned event without blocking capture or emergency-stop messages.
+    bool ReadyToRender(core::FramePacingMode framePacing);
+    HANDLE FrameLatencyEvent() const noexcept { return frameReady_ ? nullptr : frameLatencyEvent_; }
+    void NotifyFrameLatencyReady() noexcept { frameReady_ = true; }
 
     std::uint64_t PresentedFrames() const noexcept { return presentedFrames_; }
     std::uint64_t DroppedFrames() const noexcept { return droppedFrames_; }
@@ -69,6 +78,7 @@ private:
     bool CreateSourceView(const CapturedFrame& frame);
     void ClearSourceViews();
     bool DrawFrame(const CapturedFrame& frame, const core::EffectSettings& effects);
+    bool PollFrameLatency();
     bool Check(HRESULT result) noexcept { lastError_ = result; return SUCCEEDED(result); }
     static std::wstring ShaderPath(const wchar_t* fileName);
 
@@ -76,6 +86,10 @@ private:
     HWND outputWindow_ = nullptr;
     RECT bounds_{};
     Microsoft::WRL::ComPtr<IDXGISwapChain1> swapChain_;
+    Microsoft::WRL::ComPtr<IDXGISwapChain2> swapChain2_;
+    HANDLE frameLatencyEvent_ = nullptr;
+    bool frameReady_ = false;
+    core::FramePacingMode framePacing_ = core::FramePacingMode::Uncapped;
     Microsoft::WRL::ComPtr<IDCompositionDevice> compositionDevice_;
     Microsoft::WRL::ComPtr<IDCompositionTarget> compositionTarget_;
     Microsoft::WRL::ComPtr<IDCompositionVisual> compositionVisual_;

@@ -38,6 +38,10 @@ RenderEngine::RenderEngine(D3D11Context& graphics) : graphics_(graphics) {
     QueryPerformanceFrequency(&frequency_);
 }
 
+RenderEngine::~RenderEngine() {
+    Shutdown();
+}
+
 std::wstring RenderEngine::ShaderPath(const wchar_t* fileName) {
     std::vector<wchar_t> modulePath(32768);
     const DWORD length = GetModuleFileNameW(nullptr, modulePath.data(), static_cast<DWORD>(modulePath.size()));
@@ -62,13 +66,19 @@ bool RenderEngine::CreateSwapChain(const RECT& bounds) {
     description.Scaling = DXGI_SCALING_STRETCH;
     description.SwapEffect = DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL;
     description.AlphaMode = DXGI_ALPHA_MODE_IGNORE;
-    description.Flags = graphics_.TearingSupported() ? DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING : 0;
+    description.Flags = DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT |
+        (graphics_.TearingSupported() ? DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING : 0);
 
     Microsoft::WRL::ComPtr<IDXGISwapChain1> swapChain;
     if (!Check(graphics_.Factory()->CreateSwapChainForComposition(
             graphics_.Device(), &description, nullptr, swapChain.GetAddressOf()))) {
         return false;
     }
+    if (!Check(swapChain.As(&swapChain2_)) || !Check(swapChain2_->SetMaximumFrameLatency(3))) return false;
+    frameLatencyEvent_ = swapChain2_->GetFrameLatencyWaitableObject();
+    if (!frameLatencyEvent_) return Check(E_FAIL);
+    frameReady_ = false;
+    framePacing_ = core::FramePacingMode::Uncapped;
     Microsoft::WRL::ComPtr<IDXGIDevice> dxgiDevice;
     if (!Check(graphics_.Device()->QueryInterface(IID_PPV_ARGS(dxgiDevice.GetAddressOf()))) ||
         !Check(DCompositionCreateDevice(dxgiDevice.Get(), IID_PPV_ARGS(compositionDevice_.GetAddressOf()))) ||
@@ -156,6 +166,10 @@ void RenderEngine::Shutdown() {
     compositionDevice_.Reset();
     ClearSourceViews();
     renderTarget_.Reset();
+    if (frameLatencyEvent_) CloseHandle(frameLatencyEvent_);
+    frameLatencyEvent_ = nullptr;
+    frameReady_ = false;
+    swapChain2_.Reset();
     swapChain_.Reset();
     vertexShader_.Reset();
     pixelShader_.Reset();
@@ -178,11 +192,38 @@ bool RenderEngine::Resize(const RECT& bounds) {
     const UINT width = static_cast<UINT>(bounds.right - bounds.left);
     const UINT height = static_cast<UINT>(bounds.bottom - bounds.top);
     if (!Check(swapChain_->ResizeBuffers(2, width, height, DXGI_FORMAT_B8G8R8A8_UNORM,
-                                          graphics_.TearingSupported() ? DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING : 0))) {
+                                          DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT |
+                                          (graphics_.TearingSupported() ? DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING : 0)))) {
         return false;
     }
     bounds_ = bounds;
     return CreateBackBuffer();
+}
+
+bool RenderEngine::ReadyToRender(core::FramePacingMode framePacing) {
+    if (!swapChain2_ || !frameLatencyEvent_) return Check(E_UNEXPECTED);
+    if (framePacing != framePacing_) {
+        // Uncapped keeps the usual three-frame DXGI limit and never waits for a
+        // refresh event. VSync allows only one queued presentation.
+        std::lock_guard lock(graphics_.Mutex());
+        if (!Check(swapChain2_->SetMaximumFrameLatency(framePacing == core::FramePacingMode::VSync ? 1 : 3)))
+            return false;
+        framePacing_ = framePacing;
+        frameReady_ = false;
+    }
+    if (framePacing == core::FramePacingMode::Uncapped) return Check(S_OK);
+    return PollFrameLatency();
+}
+
+bool RenderEngine::PollFrameLatency() {
+    if (frameReady_) return Check(S_OK);
+    const DWORD ready = WaitForSingleObject(frameLatencyEvent_, 0);
+    if (ready == WAIT_OBJECT_0) {
+        frameReady_ = true;
+        return Check(S_OK);
+    }
+    if (ready == WAIT_TIMEOUT) return Check(DXGI_ERROR_WAS_STILL_DRAWING);
+    return Check(HRESULT_FROM_WIN32(GetLastError()));
 }
 
 void RenderEngine::ClearSourceViews() {
@@ -293,17 +334,22 @@ bool RenderEngine::Render(const CapturedFrame& frame, const core::EffectSettings
         ++droppedFrames_;
         return Check(E_UNEXPECTED);
     }
+    if (!ReadyToRender(framePacing)) return false;
     if (!DrawFrame(frame, effects)) {
         ++droppedFrames_;
         return false;
     }
     std::lock_guard lock(graphics_.Mutex());
     const UINT syncInterval = framePacing == core::FramePacingMode::VSync ? 1U : 0U;
-    const UINT presentFlags = framePacing == core::FramePacingMode::Uncapped && graphics_.TearingSupported()
-                                  ? DXGI_PRESENT_ALLOW_TEARING
-                                  : 0U;
+    // DXGI and the shared immediate context must remain serialized. Do not
+    // sleep in Present while holding that lock: capture needs it to stay fresh.
+    const UINT presentFlags = framePacing == core::FramePacingMode::VSync
+                                  ? DXGI_PRESENT_DO_NOT_WAIT
+                                  : (graphics_.TearingSupported() ? DXGI_PRESENT_ALLOW_TEARING : 0U);
     const HRESULT presentResult = swapChain_->Present(syncInterval, presentFlags);
+    frameReady_ = false;
     lastError_ = presentResult;
+    if (presentResult == DXGI_ERROR_WAS_STILL_DRAWING) return false;
     if (presentResult != S_OK) {
         ++droppedFrames_;
         return false;

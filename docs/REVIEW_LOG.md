@@ -91,3 +91,11 @@ Les premiers lots ci-dessous décrivent leurs vérifications historiques. Le tes
 - A dedicated panel-review sub-agent completed the initial UI patch and found a stale snapshot after a user edit followed by a reset/rejected change before Render. It fixed the snapshot updates and added regression tests; root reviewed the diff and ran the builds.
 - Deterministic tests count actual Win32 messages around the 250 ms boundary, check immediate errors/exclusion, control rollback, monitor changes, and visibility restoration. They also retain the explicit-only preset action tests.
 - Validation: final Debug and Release CTest 6/6; Release installed in `dist/bin`. Executable and both production shader hashes match `build/release`. No application process was left running by the tests. The new benchmark/reference shader are excluded from the installed package.
+
+## P34 — Reduce Windows VSync latency
+
+- Created a DXGI frame-latency waitable swapchain. VSync sets the maximum presentation queue to one frame; Uncapped retains the usual limit of three without adding a refresh wait.
+- The main loop waits for presentation readiness alongside capture events and Windows messages, before acquiring the newest captured frame. Readiness is latched when an auto-reset event is consumed; an idle desktop does not spin while waiting for capture.
+- VSync uses nonblocking `Present` and retries `DXGI_ERROR_WAS_STILL_DRAWING` without stopping capture. DXGI and the immediate context remain serialized as required, but no explicit VSync sleep holds their shared lock. Resize retains the waitable flag, and shutdown/destruction closes the event.
+- The VSync sub-agent implemented the change and tests; root reviewed the diff and ran validation after the sub-agent reached its usage limit. Tests cover event latching, idle behavior, cleanup/restart, queue depth, mode switching, resizing, capture progress and 40 real VSync frames.
+- Validation: Debug/Release CTest 6/6 and the Release desktop regression passed on the RX 6600. For the 40-frame test, CPU draw-plus-Present duration was 0.1327 ms median and 0.179 ms maximum. This measures submission cost, not input-to-photon latency; a capture overlay still has capture/compositor/display latency. Release package rebuilt in `build/release` and `dist/bin`.

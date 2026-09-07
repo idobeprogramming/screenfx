@@ -8,6 +8,8 @@
 #include <stdexcept>
 #include <cmath>
 #include <string_view>
+#include <algorithm>
+#include <array>
 
 using namespace screenfx;
 using Microsoft::WRL::ComPtr;
@@ -26,7 +28,75 @@ struct RenderEngineTestAccess {
     static bool Draw(RenderEngine& engine, const CapturedFrame& frame, const core::EffectSettings& effects) {
         return engine.DrawFrame(frame, effects);
     }
+    static void UseLatencyEvent(RenderEngine& engine, HANDLE event) { engine.frameLatencyEvent_ = event; }
+    static bool PollLatency(RenderEngine& engine) { return engine.PollFrameLatency(); }
+    static void CheckSwapChainPacing(RenderEngine& engine, UINT maximum) {
+        DXGI_SWAP_CHAIN_DESC1 description{};
+        Require(SUCCEEDED(engine.swapChain_->GetDesc1(&description)), "Cannot inspect swapchain flags");
+        Require((description.Flags & DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT) != 0,
+            "Swapchain does not have a frame latency event");
+        UINT latency = 0;
+        Require(SUCCEEDED(engine.swapChain2_->GetMaximumFrameLatency(&latency)) && latency == maximum,
+            "Swapchain queue has the wrong maximum latency");
+    }
 };
+}
+
+void TestFrameReadiness() {
+    graphics::D3D11Context device;
+    graphics::RenderEngine renderer(device);
+    HANDLE event = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+    Require(event != nullptr, "Cannot create readiness fixture");
+    graphics::RenderEngineTestAccess::UseLatencyEvent(renderer, event);
+    Require(!graphics::RenderEngineTestAccess::PollLatency(renderer) &&
+        renderer.LastError() == DXGI_ERROR_WAS_STILL_DRAWING, "A full queue must defer rendering without an error");
+    Require(renderer.FrameLatencyEvent() == event, "The message loop must wait when the queue is full");
+    SetEvent(event);
+    Require(graphics::RenderEngineTestAccess::PollLatency(renderer), "Ready queue was not accepted");
+    Require(WaitForSingleObject(event, 0) == WAIT_TIMEOUT, "Fixture must exercise an auto-reset event");
+    Require(graphics::RenderEngineTestAccess::PollLatency(renderer), "Readiness was lost before a capture arrived");
+    Require(renderer.FrameLatencyEvent() == nullptr, "A ready queue must not wake an idle loop repeatedly");
+    renderer.Shutdown();
+    Require(renderer.FrameLatencyEvent() == nullptr, "Shutdown retained a latency handle");
+    DWORD flags = 0;
+    Require(!GetHandleInformation(event, &flags) && GetLastError() == ERROR_INVALID_HANDLE,
+        "Shutdown leaked the latency handle");
+
+    event = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+    Require(event != nullptr, "Cannot recreate readiness fixture");
+    graphics::RenderEngineTestAccess::UseLatencyEvent(renderer, event);
+    SetEvent(event);
+    Require(WaitForSingleObject(event, 0) == WAIT_OBJECT_0, "Message-loop readiness fixture failed");
+    renderer.NotifyFrameLatencyReady();
+    Require(graphics::RenderEngineTestAccess::PollLatency(renderer), "Message-loop wake was consumed twice");
+    renderer.Shutdown();
+    std::cout << "PASS: VSync readiness latch, idle wait, message-loop wake, event cleanup/restart\n";
+}
+
+bool WaitUntilReady(graphics::RenderEngine& renderer, core::FramePacingMode mode) {
+    const ULONGLONG deadline = GetTickCount64() + 5000;
+    while (!renderer.ReadyToRender(mode)) {
+        if (renderer.LastError() != DXGI_ERROR_WAS_STILL_DRAWING || GetTickCount64() >= deadline) return false;
+        const HANDLE event = renderer.FrameLatencyEvent();
+        const DWORD result = MsgWaitForMultipleObjectsEx(1, &event, 50, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
+        if (result == WAIT_OBJECT_0) renderer.NotifyFrameLatencyReady();
+        if (result == WAIT_FAILED) return false;
+        MSG message{};
+        while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE)) {
+            TranslateMessage(&message); DispatchMessageW(&message);
+        }
+    }
+    return true;
+}
+
+bool PresentWhenReady(graphics::RenderEngine& renderer, const graphics::CapturedFrame& frame,
+                      core::FramePacingMode mode) {
+    const ULONGLONG deadline = GetTickCount64() + 5000;
+    do {
+        if (!WaitUntilReady(renderer, mode)) return false;
+        if (renderer.Render(frame, {}, mode)) return true;
+    } while (renderer.LastError() == DXGI_ERROR_WAS_STILL_DRAWING && GetTickCount64() < deadline);
+    return false;
 }
 
 ComPtr<ID3D11Texture2D> Texture(graphics::D3D11Context& device, UINT width, UINT height,
@@ -161,9 +231,13 @@ void TestDesktopCapture() {
         overlay.SetBounds(monitor.bounds);
         graphics::RenderEngine renderer(device);
         Require(renderer.Initialize(overlay.Handle(), monitor.bounds), "Composition renderer initialization failed");
+        graphics::RenderEngineTestAccess::CheckSwapChainPacing(renderer, 3);
         Require(renderer.Render(frame, {}, core::FramePacingMode::Uncapped), "Composition presentation failed");
         Require(renderer.Resize(RECT{0, 0, 640, 480}), "Resize after presentation failed");
-        Require(renderer.Render(frame, {}, core::FramePacingMode::VSync), "VSync presentation after resize failed");
+        Require(PresentWhenReady(renderer, frame, core::FramePacingMode::VSync), "VSync presentation after resize failed");
+        graphics::RenderEngineTestAccess::CheckSwapChainPacing(renderer, 1);
+        Require(PresentWhenReady(renderer, frame, core::FramePacingMode::Uncapped), "Switch back to uncapped failed");
+        graphics::RenderEngineTestAccess::CheckSwapChainPacing(renderer, 3);
         Require(!overlay.IsVisible(), "Diagnostic unexpectedly covered desktop");
         renderer.Shutdown(); capture.Stop(); overlay.Destroy();
     }
@@ -240,6 +314,53 @@ void TestVisibleComposition() {
     Require(WindowFromPoint(center) == backdrop.window, "Overlay intercepted desktop hit testing");
     Require(SetWindowDisplayAffinity(overlay.Handle(), WDA_EXCLUDEFROMCAPTURE) != FALSE, "Test exclusion failed");
     Require(waitForColor(70, 180, 30), "Excluded overlay did not reveal the underlying green desktop pixels to capture");
+
+    // Exercise a moving desktop while the app uses the low-latency VSync path.
+    // Capture must continue progressing; no frame lease is taken before the
+    // presentation slot is ready. This measures submission, not input-to-photon latency.
+    std::vector<double> submitMilliseconds;
+    const auto capturedBeforeVSync = capture.CapturedFrames();
+    LARGE_INTEGER frequency{};
+    QueryPerformanceFrequency(&frequency);
+    std::uint64_t lastSequence = 0;
+    for (int sample = 0; sample < 40; ++sample) {
+        const HBRUSH previous = backdrop.brush;
+        backdrop.brush = CreateSolidBrush(sample % 2 ? RGB(70, 140, 30) : RGB(30, 180, 70));
+        Require(backdrop.brush != nullptr, "VSync backdrop brush failed");
+        SetClassLongPtrW(backdrop.window, GCLP_HBRBACKGROUND, reinterpret_cast<LONG_PTR>(backdrop.brush));
+        InvalidateRect(backdrop.window, nullptr, TRUE);
+        UpdateWindow(backdrop.window);
+        DeleteObject(previous);
+
+        Require(WaitUntilReady(renderer, core::FramePacingMode::VSync), "VSync queue readiness stopped signaling");
+        graphics::CapturedFrame fresh;
+        const ULONGLONG deadline = GetTickCount64() + 5000;
+        while (!capture.TryAcquireLatest(fresh) && GetTickCount64() < deadline) {
+            const HANDLE event = capture.FrameEvent();
+            MsgWaitForMultipleObjectsEx(1, &event, 50, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
+            MSG message{};
+            while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE)) {
+                TranslateMessage(&message); DispatchMessageW(&message);
+            }
+        }
+        Require(fresh.texture && fresh.sequence > lastSequence, "Capture stopped advancing in VSync mode");
+        lastSequence = fresh.sequence;
+        LARGE_INTEGER started{}, finished{};
+        QueryPerformanceCounter(&started);
+        const bool presented = renderer.Render(fresh, {}, core::FramePacingMode::VSync);
+        QueryPerformanceCounter(&finished);
+        submitMilliseconds.push_back(1000.0 * static_cast<double>(finished.QuadPart - started.QuadPart) /
+            static_cast<double>(frequency.QuadPart));
+        if (!presented) {
+            Require(renderer.LastError() == DXGI_ERROR_WAS_STILL_DRAWING, "VSync submission failed");
+            Require(PresentWhenReady(renderer, fresh, core::FramePacingMode::VSync), "VSync busy retry did not recover");
+        }
+    }
+    Require(capture.CapturedFrames() >= capturedBeforeVSync + 39, "VSync prevented capture callbacks from progressing");
+    graphics::RenderEngineTestAccess::CheckSwapChainPacing(renderer, 1);
+    std::sort(submitMilliseconds.begin(), submitMilliseconds.end());
+    std::cout << "PASS: 40 live VSync frames, capture progress, queue depth 1; draw+Present CPU median "
+        << submitMilliseconds[submitMilliseconds.size() / 2] << " ms, max " << submitMilliseconds.back() << " ms\n";
     overlay.Hide(); capture.Stop(); renderer.Shutdown();
     std::cout << "PASS: visible composition pixels, click-through hit testing, capture exclusion\n";
 }
@@ -248,6 +369,7 @@ int main(int argc, char** argv) {
     try {
         SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
         winrt::init_apartment(winrt::apartment_type::multi_threaded);
+        TestFrameReadiness();
         TestShaderPixels();
         if (argc > 1 && std::string_view(argv[1]) == "--capture") TestDesktopCapture();
         if (argc > 1 && std::string_view(argv[1]) == "--desktop") {
